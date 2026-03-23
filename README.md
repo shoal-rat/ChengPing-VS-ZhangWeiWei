@@ -1,44 +1,37 @@
 # ChengPing VS ZhangWeiwei
 
-`ChengPing VS ZhangWeiwei` is now a full Pygame satire arena fighter instead of a movement prototype.
+`ChengPing VS ZhangWeiwei` is now a six-character Pygame arcade fighter built around meme forms, public-persona parody, and internet-born move kits.
 
-## Game Concept
+## What Changed
 
-The redesign turns the project into a one-player meme debate battle:
+- The old one-match prototype is now an `arcade ladder` with three sequential AI fights.
+- The roster expanded from `2` to `6` meme fighters.
+- Every fighter now has `basic`, `special`, `utility`, and `ultimate` skills.
+- Movement now includes `double jump`, `fast fall`, `guard`, and `dash`.
+- Low-health rounds still trigger the `牢A 斩杀线`, and `牢A` can now also force it with an ultimate.
+- The character select screen, HUD, stage themes, and match intro flow were fully redesigned.
 
-- Pick `陈平 / Chen Ping` or `张维为 / Zhang Weiwei`.
-- Fight the AI on a stylized panel-show stage.
-- Use meme-driven move sets instead of generic bullets.
-- Survive the late-round `牢A 斩杀线` hazard when either side drops into low health.
+## Playable Roster
 
-This is written as parody based on public personas, recurring talking points, and internet meme culture.
+- `陈平·购买力版`
+- `陈平·讲堂版`
+- `张维为·文明版`
+- `张维为·演播室版`
+- `牢A·斩杀线版`
+- `牢A·账单版`
 
-## Character Kits
-
-### 陈平 / Chen Ping
-
-- `陈平不等式`: fast card projectile for ranged pressure.
-- `购买力冲击波`: triple spread that floods the screen and punishes bad spacing.
-- Strong at zoning and tempo control.
-
-### 张维为 / Zhang Weiwei
-
-- `文明型国家`: wave orb for midrange control.
-- `这就是中国`: multi-orb special that locks down space.
-- Strong at controlling the center and forcing reactions.
-
-### 牢A Event
-
-- When a fighter falls below the low-health threshold, `牢A` activates a `斩杀线`.
-- The warning flashes first.
-- Jump when it goes live or take a heavy hit.
+Each form is built from recurring meme material around Chen Ping, Zhang Weiwei, and 牢A rather than generic projectile templates.
 
 ## Controls
 
 - `A / D`: move
-- `W`: jump
-- `J`: basic attack
+- `W`: jump / double jump
+- `S`: fast fall
+- `Space`: guard
+- `J`: basic
 - `K`: special
+- `I`: utility
+- `U`: ultimate
 - `L`: dash
 
 ## Run
@@ -51,10 +44,20 @@ python blank.py
 ## Headless Smoke Test
 
 ```bash
-python blank.py --headless-smoke-test --frames 240
+python blank.py --headless-smoke-test --frames 1800
 ```
+
+## Image Pipeline
+
+Internet-sourced portrait inputs are stored in `assets/raw`, then processed into in-game cards/tokens/busts in `assets/processed`.
+
+```bash
+python asset_pipeline.py
+```
+
+Source links are documented in [assets/CREDITS.md](assets/CREDITS.md).
 
 ## Notes
 
-- The game is fully self-contained and no longer depends on missing bitmap assets.
-- The UI is drawn in code with animated panels, stage lighting, floating keyword bubbles, round banners, and a match-over screen.
+- The game is written as parody based on public personas, recurring arguments, show clips, and meme culture.
+- Runtime only needs the processed assets committed in the repo, but the pipeline is included so portraits can be rebuilt.
