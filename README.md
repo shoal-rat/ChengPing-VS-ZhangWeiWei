@@ -1,38 +1,41 @@
 # ChengPing VS ZhangWeiwei
 
-`ChengPing VS ZhangWeiwei` is now a six-character Pygame arcade fighter built around meme forms, public-persona parody, and internet-born move kits.
+`ChengPing VS ZhangWeiwei` is now a nine-fighter Pygame anime-parody arena game built from public-persona memes, directional move kits, and image-processed portrait sprites.
 
-## What Changed
+## Current Build
 
-- The old one-match prototype is now an `arcade ladder` with three sequential AI fights.
-- The roster expanded from `2` to `6` meme fighters.
-- Every fighter now has `basic`, `special`, `utility`, and `ultimate` skills.
-- Movement now includes `double jump`, `fast fall`, `guard`, and `dash`.
-- Low-health rounds still trigger the `牢A 斩杀线`, and `牢A` can now also force it with an ultimate.
-- The character select screen, HUD, stage themes, and match intro flow were fully redesigned.
+- `9` playable meme fighters in a `3-match arcade ladder`
+- `5` directional `J` attacks and `5` directional `K` skills for every fighter
+- shared movement system with `double jump`, `fast fall`, `guard`, `dash`, and `ultimate`
+- difficulty presets that change AI reaction speed, aggression, combo follow-up, and guarding
+- layered portrait animation using processed `head` and `torso` cutouts
+- stronger match flow with stage themes, round intros, ticker text, and campaign finish screens
 
-## Playable Roster
+## Roster
 
 - `陈平·购买力版`
 - `陈平·讲堂版`
 - `张维为·文明版`
 - `张维为·演播室版`
+- `牢A·海报版`
 - `牢A·斩杀线版`
-- `牢A·账单版`
-
-Each form is built from recurring meme material around Chen Ping, Zhang Weiwei, and 牢A rather than generic projectile templates.
+- `峰哥·东百版`
+- `户晨风·评测版`
+- `胡锡进·社评版`
 
 ## Controls
 
 - `A / D`: move
-- `W`: jump / double jump
+- `W`: jump or double jump
 - `S`: fast fall
 - `Space`: guard
-- `J`: basic
-- `K`: special
-- `I`: utility
+- `J`: neutral attack
+- `W / A / S / D + J`: directional attack
+- `K`: neutral skill
+- `W / A / S / D + K`: directional skill
 - `U`: ultimate
 - `L`: dash
+- `1 / 2 / 3`: menu difficulty
 
 ## Run
 
@@ -41,15 +44,23 @@ python -m pip install -r requirements.txt
 python blank.py
 ```
 
-## Headless Smoke Test
+## Playtest Modes
+
+Headless smoke test:
 
 ```bash
 python blank.py --headless-smoke-test --frames 1800
 ```
 
-## Image Pipeline
+Visible autoplay demo:
 
-Internet-sourced portrait inputs are stored in `assets/raw`, then processed into in-game cards/tokens/busts in `assets/processed`.
+```bash
+python blank.py --autoplay-playtest --frames 1800 --difficulty 3
+```
+
+## Portrait Pipeline
+
+Internet-sourced portrait inputs are downloaded into `assets/raw`, then processed into stylized `card`, `token`, `bust`, `head`, and `torso` sprites in `assets/processed`.
 
 ```bash
 python asset_pipeline.py
@@ -59,5 +70,6 @@ Source links are documented in [assets/CREDITS.md](assets/CREDITS.md).
 
 ## Notes
 
-- The game is written as parody based on public personas, recurring arguments, show clips, and meme culture.
-- Runtime only needs the processed assets committed in the repo, but the pipeline is included so portraits can be rebuilt.
+- The game is parody based on public personas, recurring arguments, and meme culture.
+- Runtime only needs the committed `assets/processed` files.
+- The raw-image pipeline is included so the roster art can be rebuilt or extended.

@@ -24,12 +24,12 @@ Vec2 = pygame.Vector2
 
 
 class DebateArenaGame:
-    def __init__(self, headless: bool = False) -> None:
+    def __init__(self, headless: bool = False, autoplay_playtest: bool = False, difficulty_index: int = 1) -> None:
         pygame.init()
         self.settings = Settings()
         flags = pygame.HIDDEN if headless else 0
         self.screen = pygame.display.set_mode(self.settings.screen_size, flags)
-        pygame.display.set_caption("ChengPing VS ZhangWeiwei: Meme Debate Arena")
+        pygame.display.set_caption("ChengPing VS ZhangWeiwei: Ironic Anime Meme Arena")
         self.clock = pygame.time.Clock()
         self.fonts = build_fonts(self.settings)
         self.blueprints = build_blueprints(self.settings)
@@ -38,8 +38,10 @@ class DebateArenaGame:
         self.kill_line = KillLineEvent(self.settings.floor_y)
         self.random = random.Random(42)
         self.headless = headless
+        self.autoplay_playtest = autoplay_playtest
 
         self.selected_index = 0
+        self.difficulty_index = max(0, min(2, difficulty_index))
         self.state = "menu"
         self.elapsed = 0.0
         self.banner_timer = 0.0
@@ -62,15 +64,24 @@ class DebateArenaGame:
         self.player: Fighter | None = None
         self.opponent: Fighter | None = None
         self.opponent_queue: list[FighterBlueprint] = []
+        self.player_ai_state: dict[str, float | str] = {}
+        self.opponent_ai_state: dict[str, float | str] = {}
 
         self.left_down = False
         self.right_down = False
+        self.up_down = False
         self.down_down = False
         self.guard_down = False
+        self.pending_jump_timer = 0.0
+
         self.ticker_index = 0
         self.ticker_timer = 4.5
         self.ticker_hold = 0.0
         self.ticker_text = self.settings.ticker_messages[0]
+
+    def current_difficulty_profile(self) -> dict[str, object]:
+        effective = min(2, self.difficulty_index + self.match_index)
+        return self.settings.difficulty_profiles[effective]
 
     def set_ticker(self, text: str, hold: float = 2.2) -> None:
         self.ticker_text = text
@@ -85,7 +96,7 @@ class DebateArenaGame:
         if self.ticker_timer <= 0.0:
             self.ticker_index = (self.ticker_index + 1) % len(self.settings.ticker_messages)
             self.ticker_text = self.settings.ticker_messages[self.ticker_index]
-            self.ticker_timer = 5.6
+            self.ticker_timer = 5.5
 
     def blueprint_by_key(self, key: str) -> FighterBlueprint:
         for blueprint in self.blueprints:
@@ -95,18 +106,17 @@ class DebateArenaGame:
 
     def choose_arcade_queue(self, player_bp: FighterBlueprint) -> list[FighterBlueprint]:
         remaining = [bp for bp in self.blueprints if bp.key != player_bp.key]
-        boss_key = "lao_a_execute" if player_bp.key != "lao_a_execute" else "zhang_weiwei_civil"
-        boss = self.blueprint_by_key(boss_key)
-        early_pool = [bp for bp in remaining if bp.key != boss.key]
+        final_key = "lao_a_budget" if player_bp.key != "lao_a_budget" else "hu_xijin_editor"
+        final_boss = self.blueprint_by_key(final_key)
+        early_pool = [bp for bp in remaining if bp.key != final_boss.key]
         early = self.random.sample(early_pool, self.settings.arcade_matches - 1)
-        return early + [boss]
+        return early + [final_boss]
 
-    def stage_for_opponent(self, opponent_bp: FighterBlueprint) -> dict[str, object]:
-        if opponent_bp.key.startswith("chen_ping"):
-            return self.settings.stage_themes[1]
-        if opponent_bp.key.startswith("zhang_weiwei"):
-            return self.settings.stage_themes[0]
-        return self.settings.stage_themes[3]
+    def reset_ai_state(self) -> None:
+        profile = self.current_difficulty_profile()
+        reaction = float(profile["reaction"])
+        self.player_ai_state = {"decision_timer": reaction, "move_axis": 0.0, "guard_timer": 0.0}
+        self.opponent_ai_state = {"decision_timer": reaction * 0.9, "move_axis": 0.0, "guard_timer": 0.0}
 
     def reset_campaign(self) -> None:
         player_bp = self.blueprints[self.selected_index]
@@ -120,62 +130,84 @@ class DebateArenaGame:
     def start_match(self) -> None:
         player_bp = self.blueprints[self.selected_index]
         opponent_bp = self.opponent_queue[self.match_index]
-        self.current_stage = self.stage_for_opponent(opponent_bp)
+        self.current_stage = self.settings.stage_themes[opponent_bp.stage_theme]
         self.backdrop.set_theme(self.current_stage)
         self.player = Fighter(player_bp, self.art[player_bp.key], self.settings, 166, 1, is_player=True)
-        self.opponent = Fighter(opponent_bp, self.art[opponent_bp.key], self.settings, self.settings.width - 290, -1, is_player=False)
+        self.opponent = Fighter(opponent_bp, self.art[opponent_bp.key], self.settings, self.settings.width - 298, -1, is_player=False)
         self.player_rounds = 0
         self.opponent_rounds = 0
         self.projectiles.clear()
         self.floating_texts.clear()
         self.kill_line.reset()
+        self.reset_ai_state()
         self.state = "match_intro"
         self.match_intro_timer = self.settings.match_intro_time
-        self.set_ticker(f"Entering {self.current_stage['name']}.", hold=2.2)
+        self.set_ticker(f"Entering {self.current_stage['name']}.", hold=2.0)
 
     def start_round(self) -> None:
         if not self.player or not self.opponent:
             return
         self.player.reset(166, 1)
-        self.opponent.reset(self.settings.width - 290, -1)
+        self.opponent.reset(self.settings.width - 298, -1)
         self.projectiles.clear()
         self.floating_texts.clear()
         self.kill_line.reset()
+        self.pending_jump_timer = 0.0
         self.round_time = self.settings.round_time
         self.state = "round_intro"
         self.banner_timer = self.settings.intro_time
-        round_number = self.player_rounds + self.opponent_rounds + 1
-        self.round_message = f"ROUND {round_number}"
-        self.round_submessage = "Memes loaded. Guard up."
-        self.set_ticker(self.settings.ticker_messages[(self.match_index + round_number - 1) % len(self.settings.ticker_messages)], hold=2.4)
+        self.round_message = f"ROUND {self.player_rounds + self.opponent_rounds + 1}"
+        self.round_submessage = "Directional inputs live. Guard late and lose the pace."
+        self.set_ticker(self.settings.ticker_messages[(self.match_index + self.player_rounds + self.opponent_rounds) % len(self.settings.ticker_messages)], hold=2.2)
+
+    def current_attack_direction(self) -> str:
+        if self.up_down:
+            return "up"
+        if self.down_down:
+            return "down"
+        if self.left_down and not self.right_down:
+            return "left"
+        if self.right_down and not self.left_down:
+            return "right"
+        return "neutral"
 
     def apply_move_result(self, fighter: Fighter, result: MoveResult | None) -> None:
         if result is None:
             return
         if result.projectiles:
             self.projectiles.extend(result.projectiles)
-        color = result.text_color or fighter.blueprint.accent_secondary
-        self.floating_texts.append(FloatingText(result.label, fighter.center + Vec2(0, -112), color))
-        self.set_ticker(f"{fighter.blueprint.display_name} used {result.label}.", hold=1.7)
+        self.floating_texts.append(FloatingText(result.label, fighter.center + Vec2(0, -110), result.text_color or fighter.blueprint.accent_secondary))
+        self.set_ticker(f"{fighter.blueprint.display_name} used {result.label}.", hold=1.5)
         if result.force_kill_line:
             self.kill_line.force_trigger()
+
+    def perform_player_attack(self, button: str) -> None:
+        if not self.player:
+            return
+        direction = self.current_attack_direction()
+        if direction == "up" and self.pending_jump_timer > 0.0:
+            self.pending_jump_timer = 0.0
+        if button == "basic":
+            self.apply_move_result(self.player, self.player.attack("basic", direction))
+        elif button == "skill":
+            self.apply_move_result(self.player, self.player.attack("skill", direction))
+        else:
+            self.apply_move_result(self.player, self.player.use_ultimate())
 
     def finish_round(self, winner: Fighter | None, reason: str) -> None:
         if self.state in {"round_over", "campaign_over"}:
             return
-
         if winner is self.player:
             self.player_rounds += 1
             self.round_submessage = f"{self.player.blueprint.display_name} took the round."
-            self.set_ticker(f"{self.player.blueprint.display_name} wins the round.", hold=3.0)
+            self.set_ticker(f"{self.player.blueprint.display_name} wins the round.", hold=2.4)
         elif winner is self.opponent:
             self.opponent_rounds += 1
             self.round_submessage = f"{self.opponent.blueprint.display_name} took the round."
-            self.set_ticker(f"{self.opponent.blueprint.display_name} wins the round.", hold=3.0)
+            self.set_ticker(f"{self.opponent.blueprint.display_name} wins the round.", hold=2.4)
         else:
-            self.round_submessage = "Round drawn. Both sides flooded the timeline."
-            self.set_ticker("Round draw. Resetting the stage.", hold=3.0)
-
+            self.round_submessage = "Round drawn. Both sides posted harder than they fought."
+            self.set_ticker("Round draw. Resetting the discourse.", hold=2.2)
         self.round_message = reason
         self.state = "round_over"
         self.freeze_timer = self.settings.round_freeze_time
@@ -191,7 +223,6 @@ class DebateArenaGame:
                 self.match_index += 1
                 self.start_match()
             return
-
         if self.opponent_rounds >= self.settings.rounds_to_win:
             self.campaign_victory = False
             self.campaign_winner = self.opponent.blueprint
@@ -206,6 +237,12 @@ class DebateArenaGame:
             self.selected_index = (self.selected_index - 3) % len(self.blueprints)
         elif event.key in (pygame.K_DOWN, pygame.K_s):
             self.selected_index = (self.selected_index + 3) % len(self.blueprints)
+        elif event.key == pygame.K_1:
+            self.difficulty_index = 0
+        elif event.key == pygame.K_2:
+            self.difficulty_index = 1
+        elif event.key == pygame.K_3:
+            self.difficulty_index = 2
         elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
             self.reset_campaign()
 
@@ -226,6 +263,9 @@ class DebateArenaGame:
                     self.state = "menu"
                 return True
 
+            if self.autoplay_playtest:
+                return True
+
             if event.key == pygame.K_a:
                 self.left_down = True
             elif event.key == pygame.K_d:
@@ -236,27 +276,26 @@ class DebateArenaGame:
                 self.guard_down = True
                 if self.player:
                     self.player.start_guard()
+            elif event.key == pygame.K_w:
+                self.up_down = True
+                if self.state == "playing":
+                    self.pending_jump_timer = 0.10
 
-            if self.state != "playing" or not self.player:
+            if self.state != "playing":
                 return True
 
-            if event.key == pygame.K_w:
-                if self.player.jump():
-                    self.set_ticker(f"{self.player.blueprint.display_name} jumped the timeline.")
-            elif event.key == pygame.K_j:
-                self.apply_move_result(self.player, self.player.use_basic())
+            if event.key == pygame.K_j:
+                self.perform_player_attack("basic")
             elif event.key == pygame.K_k:
-                self.apply_move_result(self.player, self.player.use_special())
-            elif event.key == pygame.K_i:
-                self.apply_move_result(self.player, self.player.use_utility())
-            elif event.key == pygame.K_u:
+                self.perform_player_attack("skill")
+            elif event.key == pygame.K_u and self.player:
                 self.apply_move_result(self.player, self.player.use_ultimate())
-            elif event.key == pygame.K_l:
+            elif event.key == pygame.K_l and self.player:
                 if self.player.dash():
-                    self.set_ticker(f"{self.player.blueprint.display_name} dashed through the hot take.")
+                    self.set_ticker(f"{self.player.blueprint.display_name} dashed through the take.", hold=1.1)
             return True
 
-        if event.type == pygame.KEYUP:
+        if event.type == pygame.KEYUP and not self.autoplay_playtest:
             if event.key == pygame.K_a:
                 self.left_down = False
             elif event.key == pygame.K_d:
@@ -267,6 +306,11 @@ class DebateArenaGame:
                 self.guard_down = False
                 if self.player:
                     self.player.stop_guard()
+            elif event.key == pygame.K_w:
+                self.up_down = False
+                if self.pending_jump_timer > 0.0 and self.state == "playing" and self.player and self.player.jump():
+                    self.pending_jump_timer = 0.0
+            return True
         return True
 
     def incoming_projectile_near(self, owner_key: str, target: Fighter, max_distance: float = 220.0) -> bool:
@@ -277,114 +321,132 @@ class DebateArenaGame:
                 return True
         return False
 
-    def update_ai(self, dt: float) -> None:
-        if self.state != "playing" or not self.player or not self.opponent:
-            return
+    def update_ai_actor(self, fighter: Fighter, target: Fighter, state: dict[str, float | str], dt: float) -> None:
+        profile = self.current_difficulty_profile()
+        reaction = float(profile["reaction"])
+        aggression = float(profile["aggression"])
+        combo = float(profile["combo"])
+        guard_skill = float(profile["guard"])
+        anti_air = float(profile["anti_air"])
 
-        bot = self.opponent
-        target = self.player
-        bot.ai_cooldown = max(0.0, bot.ai_cooldown - dt)
-        bot.face_target(target.center.x)
-
-        distance = target.center.x - bot.center.x
-        abs_distance = abs(distance)
-
-        if self.kill_line.phase == "warning" and bot.on_ground:
-            bot.jump()
-            bot.ai_cooldown = 0.2
-
-        incoming = self.incoming_projectile_near(self.player.blueprint.key, bot)
-        if incoming and bot.guard_break_timer <= 0.0 and bot.on_ground:
-            bot.start_guard()
+        fighter.face_target(target.center.x)
+        state["decision_timer"] = float(state.get("decision_timer", reaction)) - dt
+        state["guard_timer"] = max(0.0, float(state.get("guard_timer", 0.0)) - dt)
+        if float(state["guard_timer"]) > 0.0:
+            fighter.start_guard()
         else:
-            bot.stop_guard()
+            fighter.stop_guard()
 
-        axis = 0.0
-        rush = bot.blueprint.key.startswith("lao_a_execute")
-        if abs_distance > bot.blueprint.preferred_range + 50:
-            axis = 1.0 if distance > 0 else -1.0
-        elif abs_distance < (160 if rush else 210):
-            axis = 1.0 if (rush and distance > 0) else (-1.0 if distance > 0 else 1.0)
-            if rush:
-                axis = 1.0 if distance > 0 else -1.0
-        bot.set_move(axis)
-        bot.set_fast_fall(False)
+        incoming = self.incoming_projectile_near(target.blueprint.key, fighter)
+        if incoming and fighter.on_ground and self.random.random() < guard_skill:
+            state["guard_timer"] = reaction * 1.1
+            fighter.start_guard()
 
-        if bot.ai_cooldown > 0.0:
+        if float(state["decision_timer"]) > 0.0:
+            fighter.set_move(float(state.get("move_axis", 0.0)))
             return
 
-        if bot.meter >= self.settings.max_meter and (abs_distance < 620 or rush):
-            self.apply_move_result(bot, bot.use_ultimate())
-            bot.ai_cooldown = 0.85
+        state["decision_timer"] = reaction * self.random.uniform(0.85, 1.2)
+        distance = target.center.x - fighter.center.x
+        abs_distance = abs(distance)
+        target_above = target.center.y < fighter.center.y - 32
+        toward = 1.0 if distance > 0 else -1.0
+        direction = "right" if distance > 0 else "left"
+        state["move_axis"] = 0.0
+
+        if self.kill_line.phase == "warning" and fighter.on_ground and self.random.random() < 0.75:
+            fighter.jump()
+
+        if fighter.meter >= self.settings.max_meter and (abs_distance < 640 or self.random.random() < aggression):
+            self.apply_move_result(fighter, fighter.use_ultimate())
             return
 
-        if bot.utility_cd <= 0.0 and self.random.random() < 0.22:
-            self.apply_move_result(bot, bot.use_utility())
-            bot.ai_cooldown = 0.45
+        if target.hitstun > 0.0 and abs_distance < 220 and self.random.random() < combo:
+            self.apply_move_result(fighter, fighter.attack("skill", direction))
             return
 
-        if abs_distance < 560 and bot.special_cd <= 0.0 and self.random.random() < 0.56:
-            self.apply_move_result(bot, bot.use_special())
-            bot.ai_cooldown = 0.55
+        if target_above and self.random.random() < anti_air:
+            self.apply_move_result(fighter, fighter.attack("basic", "up"))
             return
 
-        if abs_distance < 760 and bot.attack_cd <= 0.0:
-            self.apply_move_result(bot, bot.use_basic())
-            bot.ai_cooldown = 0.32
+        if abs_distance < 160:
+            if fighter.blueprint.ai_style in {"rush", "brawler"} and self.random.random() < aggression:
+                self.apply_move_result(fighter, fighter.attack("skill", direction))
+            elif self.random.random() < 0.55:
+                self.apply_move_result(fighter, fighter.attack("basic", "down"))
+            else:
+                self.apply_move_result(fighter, fighter.attack("basic", direction))
+            state["move_axis"] = toward if fighter.blueprint.ai_style in {"rush", "brawler"} else -toward
             return
 
-        if abs_distance < 220 and bot.dash_cd <= 0.0 and self.random.random() < 0.35:
-            if bot.dash():
-                self.set_ticker(f"{bot.blueprint.display_name} changed the angle with a dash.")
-            bot.ai_cooldown = 0.25
+        if abs_distance > fighter.blueprint.preferred_range + 80:
+            state["move_axis"] = toward
+            if self.random.random() < aggression * 0.45:
+                self.apply_move_result(fighter, fighter.attack("skill", direction))
             return
 
-        if target.on_ground and self.random.random() < 0.10:
-            bot.jump()
-            bot.ai_cooldown = 0.18
+        if abs_distance < fighter.blueprint.preferred_range - 100:
+            state["move_axis"] = -toward if fighter.blueprint.ai_style not in {"rush", "brawler"} else toward
+            if self.random.random() < 0.42:
+                self.apply_move_result(fighter, fighter.attack("basic", "left" if toward > 0 else "right"))
+            return
+
+        roll = self.random.random()
+        if roll < 0.22:
+            self.apply_move_result(fighter, fighter.attack("basic", "neutral"))
+        elif roll < 0.42:
+            self.apply_move_result(fighter, fighter.attack("skill", "neutral"))
+        elif roll < 0.56:
+            self.apply_move_result(fighter, fighter.attack("basic", direction))
+        elif roll < 0.68:
+            self.apply_move_result(fighter, fighter.attack("skill", direction))
+        elif roll < 0.78:
+            self.apply_move_result(fighter, fighter.attack("basic", "down"))
+        elif roll < 0.86:
+            self.apply_move_result(fighter, fighter.attack("skill", "left" if toward > 0 else "right"))
+        elif fighter.dash_cd <= 0.0 and self.random.random() < aggression:
+            fighter.dash()
+        else:
+            state["move_axis"] = 0.0
+
+        if target.on_ground and self.random.random() < 0.09:
+            fighter.jump()
 
     def update_projectiles(self, dt: float) -> None:
         if not self.player or not self.opponent:
             return
-
-        anchors = {
-            self.player.blueprint.key: self.player.center,
-            self.opponent.blueprint.key: self.opponent.center,
-        }
-
+        anchors = {self.player.blueprint.key: self.player.center, self.opponent.blueprint.key: self.opponent.center}
         updated: list[Projectile] = []
         for projectile in self.projectiles:
             alive = projectile.update(dt, anchors)
             if not alive:
                 continue
-            if projectile.pos.x < -180 or projectile.pos.x > self.settings.width + 180:
+            if projectile.pos.x < -200 or projectile.pos.x > self.settings.width + 200:
                 continue
-            if projectile.pos.y < -200 or projectile.pos.y > self.settings.height + 200:
+            if projectile.pos.y < -220 or projectile.pos.y > self.settings.height + 220:
                 continue
 
             source = self.player if projectile.owner == self.player.blueprint.key else self.opponent
             target = self.opponent if source is self.player else self.player
 
-            if target.can_reflect():
-                if projectile.rect.colliderect(target.hurtbox):
-                    projectile.owner = target.blueprint.key
-                    projectile.anchor_owner = target.blueprint.key
-                    projectile.velocity.x *= -1
-                    projectile.returning = False
-                    self.floating_texts.append(FloatingText("Reflect", target.center + Vec2(0, -92), target.blueprint.accent_secondary))
-                    self.set_ticker(f"{target.blueprint.display_name} reflected {projectile.label}.", hold=1.6)
-                    updated.append(projectile)
-                    continue
+            if target.can_reflect() and projectile.rect.colliderect(target.hurtbox):
+                projectile.owner = target.blueprint.key
+                projectile.anchor_owner = target.blueprint.key
+                projectile.velocity.x *= -1
+                projectile.returning = False
+                self.floating_texts.append(FloatingText("Reflect", target.center + Vec2(0, -92), target.blueprint.accent_secondary))
+                self.set_ticker(f"{target.blueprint.display_name} reflected {projectile.label}.", hold=1.4)
+                updated.append(projectile)
+                continue
 
             if projectile.rect.colliderect(target.hurtbox):
                 knock_dir = 1 if target.center.x >= source.center.x else -1
                 landed, blocked = target.take_damage(projectile.damage, knock_dir, projectile.knockback_y)
                 if landed:
-                    source.gain_meter(projectile.damage * (0.65 if blocked else 1.05))
+                    source.gain_meter(projectile.damage * (0.65 if blocked else 1.0))
                     text = "BLOCK" if blocked else f"-{projectile.damage}"
                     color = target.blueprint.accent_secondary if blocked else self.settings.accent_gold
                     self.floating_texts.append(FloatingText(text, target.center + Vec2(0, -88), color))
-                    self.set_ticker(f"{projectile.label} hits {target.blueprint.display_name}.", hold=1.4)
                 continue
             updated.append(projectile)
         self.projectiles = updated
@@ -392,38 +454,32 @@ class DebateArenaGame:
     def update_kill_line(self, dt: float) -> None:
         if not self.player or not self.opponent:
             return
-
         if not self.kill_line.used and (
-            self.player.health_ratio <= self.settings.low_health_threshold
-            or self.opponent.health_ratio <= self.settings.low_health_threshold
+            self.player.health_ratio <= self.settings.low_health_threshold or self.opponent.health_ratio <= self.settings.low_health_threshold
         ):
             if self.kill_line.trigger():
-                self.floating_texts.append(
-                    FloatingText("牢A incoming", Vec2(self.settings.width / 2, self.settings.floor_y - 118), self.settings.accent_pink)
-                )
-                self.set_ticker("Low HP detected. 牢A is drawing the execution line.", hold=2.3)
+                self.floating_texts.append(FloatingText("牢A incoming", Vec2(self.settings.width / 2, self.settings.floor_y - 118), self.settings.accent_pink))
+                self.set_ticker("Low HP detected. 牢A is drawing the execution line.", hold=2.0)
 
         message = self.kill_line.update(dt)
         if message:
-            self.set_ticker(message, hold=1.9)
+            self.set_ticker(message, hold=1.8)
 
         if self.kill_line.phase != "active":
             return
-
         band = self.kill_line.band_rect(self.settings.width)
         for fighter in (self.player, self.opponent):
             if self.kill_line.can_hit(fighter.blueprint.key) and band.colliderect(fighter.hurtbox):
                 direction = -1 if fighter is self.player else 1
-                hit, blocked = fighter.take_damage(self.kill_line.damage, direction, -540.0)
-                if hit:
+                landed, blocked = fighter.take_damage(self.kill_line.damage, direction, -540.0)
+                if landed:
                     self.kill_line.register_hit(fighter.blueprint.key)
-                    self.floating_texts.append(FloatingText("斩杀线!", fighter.center + Vec2(0, -106), self.settings.accent_pink))
+                    self.floating_texts.append(FloatingText("斩杀线!", fighter.center + Vec2(0, -104), self.settings.accent_pink))
                     if blocked:
-                        self.floating_texts.append(FloatingText("Guarded", fighter.center + Vec2(0, -76), fighter.blueprint.accent_secondary))
-                    self.set_ticker(f"牢A clipped {fighter.blueprint.display_name} at the kill line.", hold=2.0)
+                        self.floating_texts.append(FloatingText("Guarded", fighter.center + Vec2(0, -74), fighter.blueprint.accent_secondary))
 
     def update_floating_texts(self, dt: float) -> None:
-        self.floating_texts = [text for text in self.floating_texts if text.update(dt)][-52:]
+        self.floating_texts = [text for text in self.floating_texts if text.update(dt)][-60:]
 
     def update_round_state(self, dt: float) -> None:
         if self.state == "match_intro":
@@ -450,19 +506,27 @@ class DebateArenaGame:
         if self.state != "playing" or not self.player or not self.opponent:
             return
 
-        axis = 0.0
-        if self.left_down and not self.right_down:
-            axis = -1.0
-        elif self.right_down and not self.left_down:
-            axis = 1.0
-        self.player.set_move(axis)
-        self.player.set_fast_fall(self.down_down)
-        if self.guard_down:
-            self.player.start_guard()
-        else:
-            self.player.stop_guard()
+        if not self.autoplay_playtest:
+            axis = 0.0
+            if self.left_down and not self.right_down:
+                axis = -1.0
+            elif self.right_down and not self.left_down:
+                axis = 1.0
+            self.player.set_move(axis)
+            self.player.set_fast_fall(self.down_down)
+            if self.guard_down:
+                self.player.start_guard()
+            else:
+                self.player.stop_guard()
 
-        self.update_ai(dt)
+            if self.pending_jump_timer > 0.0:
+                self.pending_jump_timer -= dt
+                if self.pending_jump_timer <= 0.0 and self.up_down:
+                    self.player.jump()
+        else:
+            self.update_ai_actor(self.player, self.opponent, self.player_ai_state, dt)
+
+        self.update_ai_actor(self.opponent, self.player, self.opponent_ai_state, dt)
         self.player.face_target(self.opponent.center.x)
         self.opponent.face_target(self.player.center.x)
         self.player.update(dt, self.settings.width)
@@ -491,7 +555,7 @@ class DebateArenaGame:
         self.backdrop.draw(self.screen, self.fonts, pulse)
 
         if self.state == "menu":
-            draw_menu(self.screen, self.settings, self.fonts, self.blueprints, self.art, self.selected_index, pulse)
+            draw_menu(self.screen, self.settings, self.fonts, self.blueprints, self.art, self.selected_index, self.difficulty_index, pulse)
         else:
             for projectile in self.projectiles:
                 projectile.draw(self.screen)
@@ -511,6 +575,7 @@ class DebateArenaGame:
                     self.ticker_text,
                     self.match_index + 1,
                     self.total_matches,
+                    str(self.current_difficulty_profile()["name"]),
                 )
             for text in self.floating_texts:
                 text.draw(self.screen, self.fonts["heading"])
@@ -527,6 +592,7 @@ class DebateArenaGame:
                     str(self.current_stage["name"]),
                     self.match_index + 1,
                     self.total_matches,
+                    str(self.current_difficulty_profile()["name"]),
                     pulse,
                 )
             elif self.state == "round_intro":
@@ -535,20 +601,12 @@ class DebateArenaGame:
             elif self.state == "round_over":
                 draw_round_banner(self.screen, self.settings, self.fonts, self.round_message, self.round_submessage, 220)
             elif self.state == "campaign_over" and self.campaign_winner:
-                draw_campaign_over(
-                    self.screen,
-                    self.settings,
-                    self.fonts,
-                    self.campaign_winner,
-                    self.campaign_victory,
-                    self.arcade_clears,
-                    pulse,
-                )
+                draw_campaign_over(self.screen, self.settings, self.fonts, self.campaign_winner, self.campaign_victory, self.arcade_clears, pulse)
 
         pygame.display.flip()
 
     def run(self, max_frames: int | None = None) -> int:
-        if self.headless and self.state == "menu":
+        if (self.headless or self.autoplay_playtest) and self.state == "menu":
             self.selected_index = 0
             self.reset_campaign()
 
@@ -569,7 +627,6 @@ class DebateArenaGame:
 
             self.update_round_state(dt)
             self.draw()
-
             frame_count += 1
             if max_frames is not None and frame_count >= max_frames:
                 break
@@ -580,24 +637,23 @@ class DebateArenaGame:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Play ChengPing VS ZhangWeiwei.")
-    parser.add_argument(
-        "--headless-smoke-test",
-        action="store_true",
-        help="Run a short automated arcade loop without opening a visible window.",
-    )
-    parser.add_argument(
-        "--frames",
-        type=int,
-        default=420,
-        help="Frame count for --headless-smoke-test.",
-    )
+    parser.add_argument("--headless-smoke-test", action="store_true", help="Run the game without a visible window.")
+    parser.add_argument("--autoplay-playtest", action="store_true", help="Let AI control both sides for a playtest run.")
+    parser.add_argument("--frames", type=int, default=720, help="Frame count for headless or autoplay tests.")
+    parser.add_argument("--difficulty", type=int, default=2, help="Initial difficulty: 1, 2, or 3.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
-    game = DebateArenaGame(headless=args.headless_smoke_test)
-    return game.run(max_frames=args.frames if args.headless_smoke_test else None)
+    difficulty_index = max(0, min(2, args.difficulty - 1))
+    game = DebateArenaGame(
+        headless=args.headless_smoke_test,
+        autoplay_playtest=args.autoplay_playtest,
+        difficulty_index=difficulty_index,
+    )
+    max_frames = args.frames if (args.headless_smoke_test or args.autoplay_playtest) else None
+    return game.run(max_frames=max_frames)
 
 
 if __name__ == "__main__":
