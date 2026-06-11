@@ -37,7 +37,9 @@ python -m http.server 8000
 **P2 (versus mode, press `V` in menu):** arrow keys move · `,` normals · `.` skills ·
 `/` ultimate · `'` dash · Right `Shift` guard
 
-`P` pause · `M` mute · `1/2/3` AI difficulty · `Enter` confirm · `Esc` back to menu
+`P`/`Esc` pause (Esc again quits) · `J` in pause = move list · `[` `]` volume · `M` mute · `1/2/3` AI difficulty · `Enter` confirm
+
+Dash while holding **away** = backdash with invincibility frames. Tap `W` = short hop, hold = full jump. Block at the last instant for a **just-guard** (no chip damage, bonus meter).
 
 ## Modes
 
@@ -48,9 +50,13 @@ python -m http.server 8000
 
 - 3-match arcade ladder with rising AI difficulty (final boss: 牢A·斩杀线版)
 - **牢A 斩杀线**: when anyone drops below 30% HP, an execution line sweeps the stage — the threshold is marked on every health bar
-- Hit-stop, trauma-based screen shake, dynamic camera with KO slow-mo punch-in
-- Ghost (delayed-damage) health bars, combo counter, guard heat + guard break, projectile reflects with per-character callouts
-- All SFX synthesized live via WebAudio — zero audio files
+- **Arcade scoring**: hits, combos, close-range bonuses, round/time/PERFECT bonuses, difficulty multiplier → S/A/B/C grade and a persistent HI-SCORE
+- **Movement tech**: short hop (tap W) vs full hop (hold), variable jump height, run acceleration with turn-skid, forward dash + **backdash with i-frames** (dash while holding away)
+- **Defense tech**: planted guard (25% chip), guard heat + guard break, **just-guard** (block within 0.15s = no chip + meter), per-character reflects (这就是一种自信 / 叼盘成功)
+- **Anti-spam design**: true-combo damage/juggle scaling, projectile-vs-projectile clash, 8-projectile cap, close-range damage +25%, long-range zoning builds half meter
+- Pushboxes (dash through for cross-ups), hit-stop, trauma screen shake, dynamic camera, KO slow-motion with punch-in
+- Title screen, pause menu (move list, volume), settings + high score persist in localStorage
+- All SFX and BGM synthesized live via WebAudio — zero audio files
 
 ## Tech
 

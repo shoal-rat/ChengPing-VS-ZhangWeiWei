@@ -192,6 +192,59 @@
     },
   };
 
+  // ---------- UI helpers: vignette + slanted fighting-game bars ----------
+  const vignette = (() => {
+    const c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const g = c.getContext("2d");
+    const grad = g.createRadialGradient(W / 2, H / 2 - 40, H * 0.42, W / 2, H / 2, H * 0.86);
+    grad.addColorStop(0, "rgba(4,6,12,0)");
+    grad.addColorStop(1, "rgba(4,6,12,0.46)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, W, H);
+    return c;
+  })();
+
+  function slantPath(ctx, x, y, w, h, skew = 10) {
+    ctx.beginPath();
+    ctx.moveTo(x + skew, y);
+    ctx.lineTo(x + w + skew, y);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.closePath();
+  }
+  // layered slanted bar: back, ghost, fill, ticks, edge
+  function slantBar(ctx, x, y, w, h, layers, fromRight, skew = 8) {
+    slantPath(ctx, x, y, w, h, skew);
+    ctx.fillStyle = layers.back;
+    ctx.fill();
+    ctx.save();
+    slantPath(ctx, x, y, w, h, skew);
+    ctx.clip();
+    for (const [ratio, color] of layers.fills) {
+      if (ratio <= 0) continue;
+      const fw = (w + skew) * clamp(ratio, 0, 1);
+      ctx.fillStyle = color;
+      ctx.fillRect(fromRight ? x + (w + skew) - fw : x, y, fw, h);
+    }
+    if (layers.ticks) {
+      ctx.strokeStyle = "rgba(10,12,22,0.45)";
+      ctx.lineWidth = 1.5;
+      for (let i = 1; i < layers.ticks; i++) {
+        const tx = x + (w / layers.ticks) * i;
+        ctx.beginPath();
+        ctx.moveTo(tx + skew * (1 - 0), y);
+        ctx.lineTo(tx, y + h);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    slantPath(ctx, x, y, w, h, skew);
+    ctx.strokeStyle = layers.edge || "rgba(248,236,212,0.9)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
   // ---------- projectiles (port of bullet.py) ----------
   class Projectile {
     constructor(o) {
@@ -200,9 +253,10 @@
         life: 2.0, knockbackY: -210, waveAmp: 0, waveSpeed: 0, gravity: 0,
         rotationSpeed: 120, returnDelay: 0, returnSpeed: 440, anchorOwner: null,
         orbitRadius: 0, orbitSpeed: 0, orbitAngle: 0, floorLock: null,
-        age: 0, returning: false, glow: o.color,
+        age: 0, returning: false, glow: o.color, dead: false, close: false, travel: 0,
       }, o);
       this.baseY = this.y;
+      this.spawnX = this.x;
       this.trail = [];
     }
     get rect() {
@@ -339,14 +393,19 @@
   // ---------- kill line (port of KillLineEvent) ----------
   class KillLine {
     constructor() { this.bandY = FLOOR - 82; this.thickness = 20; this.damage = 24; this.reset(); }
-    reset() { this.phase = "idle"; this.timer = 0; this.used = false; this.hits = new Set(); }
+    reset() { this.phase = "idle"; this.timer = 0; this.used = false; this.hits = new Set(); this.forceCd = 0; }
     trigger() {
       if (this.used || this.phase !== "idle") return false;
       this.used = true; this.phase = "warning"; this.timer = 0.92; this.hits.clear();
       return true;
     }
-    forceTrigger() { this.used = true; this.phase = "warning"; this.timer = 0.42; this.hits.clear(); }
+    forceTrigger() {
+      if (this.phase !== "idle" || this.forceCd > 0) return;
+      this.forceCd = 5.0; // can't keep the line permanently lit
+      this.used = true; this.phase = "warning"; this.timer = 0.42; this.hits.clear();
+    }
     update(dt) {
+      this.forceCd = Math.max(0, this.forceCd - dt);
       if (this.phase === "idle") return null;
       this.timer -= dt;
       if (this.phase === "warning" && this.timer <= 0) {
@@ -422,6 +481,13 @@
       this.anim = 0;
       this.squashX = 1; this.squashY = 1;
       this.coyote = 0;
+      this.runVel = 0;
+      this.skidCd = 0;
+      this.dashDir = facing;
+      this.dashSpeedCur = S.dashSpeed;
+      this.comboTaken = 0;
+      this.comboTakenTimer = 0;
+      this.guardActiveTime = 0;
       this.combo = 0; this.comboTimer = 0; this.comboPop = 0;
       this.afterimages.length = 0;
     }
@@ -464,12 +530,17 @@
     dash() {
       if (this.dashCd > 0 || this.hitstun > 0 || this.guardActive) return false;
       if (!this.onGround && this.airDashesLeft <= 0) return false;
+      // dash follows held direction; away from facing = backdash with i-frames
+      this.dashDir = Math.abs(this.moveAxis) > 0.1 ? Math.sign(this.moveAxis) : this.facing;
+      const back = this.dashDir !== this.facing;
       this.dashCd = 0.74;
-      this.dashTimer = S.dashDuration;
+      this.dashTimer = back ? 0.10 : S.dashDuration;
+      this.dashSpeedCur = back ? 900 : S.dashSpeed;
+      if (back) this.invuln = Math.max(this.invuln, 0.12);
       this.vy *= 0.26;
       if (!this.onGround) this.airDashesLeft -= 1;
       this.pose = "dash"; this.poseTimer = 0.12;
-      dustPuff(this.cx - this.facing * 30, this.y + this.h - 6, this.facing, 6);
+      dustPuff(this.cx - this.dashDir * 30, this.y + this.h - 6, this.dashDir, 6);
       AU.dash();
       return true;
     }
@@ -482,31 +553,38 @@
       if (this.meter < S.maxMeter) this.meterWasFull = false;
     }
     takeDamage(damage, knockDir, launchY) {
-      if (this.invuln > 0) return [false, false];
+      if (this.invuln > 0) return [false, false, false];
       const blocked = this.guardActive && this.guardBreakTimer <= 0;
+      const justGuard = blocked && this.guardActiveTime < 0.15;
       const original = damage;
       if (blocked) {
-        damage = Math.max(1, Math.round(damage * 0.42));
-        this.guardHeat = Math.min(S.maxGuardHeat, this.guardHeat + original * 7.5);
+        // planted guard: chip 25% (0% on just-guard), no launch, keep grounded
+        damage = justGuard ? 0 : Math.max(1, Math.round(damage * 0.25));
+        this.guardHeat = Math.min(S.maxGuardHeat, this.guardHeat + original * (justGuard ? 1.5 : 3.0));
         this.vx = knockDir * 110;
-        this.vy = launchY * 0.3;
-        this.hitstun = 0.05; this.invuln = 0.08; this.flash = 0.08;
+        this.hitstun = 0.05; this.invuln = 0.08; this.flash = justGuard ? 0 : 0.08;
+        if (justGuard) this.gainMeter(8);
         if (this.guardHeat >= S.maxGuardHeat) {
           this.guardBreakTimer = 1.0;
           this.guardActive = false; this.guardRequested = false;
           AU.guardBreak();
         }
       } else {
+        // victim-side combo tracking drives hitstun + juggle decay
+        if (this.comboTakenTimer > 0 || this.hitstun > 0) this.comboTaken += 1;
+        else this.comboTaken = 1;
+        this.comboTakenTimer = 0.45;
         this.vx = knockDir * 300;
-        this.vy = launchY;
-        this.hitstun = 0.17; this.invuln = 0.12; this.flash = 0.14;
+        this.vy = launchY * Math.pow(0.85, this.comboTaken - 1); // juggles decay out
+        this.hitstun = clamp(0.12 + damage * 0.008, 0.12, 0.30);
+        this.invuln = 0.12; this.flash = 0.14;
         this.pose = "hit"; this.poseTimer = 0.18;
+        this.onGround = false;
       }
       this.health = Math.max(0, this.health - damage);
       this.ghostHold = 0.55;
-      this.onGround = false;
       this.gainMeter(original * (blocked ? 0.55 : 0.78));
-      return [true, blocked];
+      return [true, blocked, justGuard];
     }
 
     worldHoriz(dir) {
@@ -799,19 +877,36 @@
       this.squashX += (1 - this.squashX) * Math.min(1, dt * 14);
       this.squashY += (1 - this.squashY) * Math.min(1, dt * 14);
 
+      this.comboTakenTimer = Math.max(0, this.comboTakenTimer - dt);
       this.guardActive = this.guardRequested && this.guardBreakTimer <= 0 &&
         this.hitstun <= 0 && this.dashTimer <= 0 && this.onGround;
-      if (!this.guardActive) this.guardHeat = Math.max(0, this.guardHeat - S.guardCoolRate * dt);
+      this.guardActiveTime = this.guardActive ? this.guardActiveTime + dt : 0;
+      // heat cools at full rate when open, half rate while holding guard
+      this.guardHeat = Math.max(0, this.guardHeat - S.guardCoolRate * (this.guardActive ? 0.5 : 1) * dt);
 
+      this.skidCd = Math.max(0, this.skidCd - dt);
       if (this.dashTimer > 0) {
         this.dashTimer = Math.max(0, this.dashTimer - dt);
-        this.x += this.facing * S.dashSpeed * dt;
+        this.x += this.dashDir * this.dashSpeedCur * dt;
+        this.runVel = this.dashDir * this.dashSpeedCur * 0.42; // keep momentum out of the dash
         this.afterimages.push({ x: this.x, y: this.y, facing: this.facing, life: 0.18 });
       } else {
+        // acceleration/friction locomotion instead of instant velocity
         let speed = this.guardActive ? S.guardSpeed : (this.onGround ? S.moveSpeed : S.airSpeed);
         if (this.speedBuffTimer > 0) speed *= 1.14;
         const axis = this.hitstun > 0 ? 0 : this.moveAxis;
-        this.x += axis * speed * dt;
+        const target = axis * speed;
+        const accel = axis !== 0
+          ? (this.onGround ? 4200 : 2300)   // drive
+          : (this.onGround ? 3400 : 700);   // friction (weak in air = drift)
+        if (this.runVel < target) this.runVel = Math.min(target, this.runVel + accel * dt);
+        else if (this.runVel > target) this.runVel = Math.max(target, this.runVel - accel * dt);
+        // turn-around skid dust
+        if (this.onGround && axis !== 0 && axis * this.runVel < 0 && Math.abs(this.runVel) > 260 && this.skidCd <= 0) {
+          dustPuff(this.cx, this.y + this.h - 4, -Math.sign(this.runVel), 5);
+          this.skidCd = 0.3;
+        }
+        this.x += this.runVel * dt;
       }
 
       this.x += this.vx * dt;
@@ -860,112 +955,241 @@
     }
 
     // ---------- chibi rendering ----------
+    // ---- cel-shaded full-body skeleton rendering ----
+    limbJoint(x1, y1, x2, y2, segLen, bendDir) {
+      // knee/elbow position for a 2-segment limb (simple IK)
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      const dx = x2 - x1, dy = y2 - y1;
+      const d = Math.hypot(dx, dy) || 1;
+      const off = Math.sqrt(Math.max(segLen * segLen - (d / 2) * (d / 2), 6));
+      return [mx + (-dy / d) * off * bendDir, my + (dx / d) * off * bendDir];
+    }
+    drawLimb(ctx, x1, y1, jx, jy, x2, y2, color, w) {
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgb(16,18,28)";
+      ctx.lineWidth = w + 4.5;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(jx, jy); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.strokeStyle = rgb(color);
+      ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(jx, jy); ctx.lineTo(x2, y2); ctx.stroke();
+    }
     drawBody(ctx, vib) {
-      const bp = this.bp;
+      const bp = this.bp, of = bp.outfit, f = this.facing;
       const cx = this.cx, bottom = this.y + this.h;
-      const bob = Math.sin(this.anim * (this.pose === "run" ? 11 : 3.2)) * (this.pose === "run" ? 4 : 2);
-      let lean = 0;
-      if (this.pose === "run") lean = this.moveAxis * 0.14;
-      else if (this.pose === "dash") lean = this.facing * 0.3;
-      else if (this.pose === "jump") lean = this.vx * 0.0003;
-      else if (this.pose === "basic" || this.pose === "skill" || this.pose === "ultimate") {
-        lean = ({ left: -0.18, right: 0.18, up: -0.1, down: 0.1 }[this.poseDir] ?? this.facing * 0.1);
-      } else if (this.pose === "hit") lean = -this.facing * 0.16;
+      const pose = this.pose, t = this.anim;
+      const white = this.flash > 0;
+      const mixW = (c) => white ? [c[0] + (255 - c[0]) * 0.5, c[1] + (255 - c[1]) * 0.5, c[2] + (255 - c[2]) * 0.5] : c;
+      const shade = (c, k) => [clamp(c[0] * k, 0, 255) | 0, clamp(c[1] * k, 0, 255) | 0, clamp(c[2] * k, 0, 255) | 0];
+      const JACKET = mixW(of.jacket), SHIRT = mixW(of.shirt), PANTS = mixW(of.pants), SHOES = mixW(of.shoes);
+      const SKIN = mixW([231, 192, 156]);
+      const bareArms = of.style === "tee" || of.style === "polo";
+      const SLEEVE = bareArms ? SKIN : JACKET;
 
-      const guardCrouch = this.guardActive ? 10 : 0;
-      const headR = 39;
-      const legLen = 34;
-      const torsoH = this.h - headR * 2 - legLen + 6;
+      // skeleton geometry
+      const headR = 38, thighL = 26, shinL = 26, torsoH = 58;
+      const shW = 19, hipW = 11;
+      const running = pose === "run";
+      const runPhase = Math.sin(t * 13);
+      const attacking = pose === "basic" || pose === "skill" || pose === "ultimate";
+      const punchT = attacking ? clamp(this.poseTimer / 0.16, 0, 1) : 0;
+      const breathe = Math.sin(t * 2.4);
+
+      let lean = 0;
+      if (running) lean = this.moveAxis * 0.13;
+      else if (pose === "dash") lean = this.dashDir * 0.32;
+      else if (pose === "jump") lean = this.vx * 0.0003;
+      else if (attacking) lean = ({ left: -0.16, right: 0.16, up: -0.08, down: 0.1 }[this.poseDir] ?? f * 0.1);
+      else if (pose === "hit") lean = -f * 0.18;
+
+      const crouch = this.guardActive ? 13 : (pose === "hit" ? 5 : 0);
+      const hipY = -(thighL + shinL - 7) + crouch - (running ? Math.abs(runPhase) * 2.5 : 0);
+      const shoulderY = hipY - torsoH + 8;
+
+      // ankle targets per pose
+      let aF, aB; // [x, y] front / back ankle
+      if (!this.onGround && pose !== "dash") {
+        if (this.vy < 0) { aF = [f * 15, -22]; aB = [-f * 3, -14]; }      // rising tuck
+        else { aF = [f * 9, -8]; aB = [-f * 13, -2]; }                     // falling
+      } else if (running) {
+        const lift = (p) => -Math.max(0, Math.cos(p)) * 11;
+        aF = [Math.sin(t * 13) * 21, lift(t * 13)];
+        aB = [Math.sin(t * 13 + Math.PI) * 21, lift(t * 13 + Math.PI)];
+      } else if (pose === "dash") { aF = [this.dashDir * 27, 0]; aB = [-this.dashDir * 22, -3]; }
+      else if (this.guardActive) { aF = [f * 17, 0]; aB = [-f * 16, 0]; }
+      else if (pose === "hit") { aF = [-f * 13, -4]; aB = [-f * 2, 0]; }
+      else if (attacking) { aF = [f * 19, 0]; aB = [-f * 15, 0]; }
+      else { aF = [f * 12, 0]; aB = [-f * 10, 0]; } // idle stance
+
+      // hand targets per pose
+      const dirUp = this.poseDir === "up" ? -34 : this.poseDir === "down" ? 22 : 0;
+      let hF, hB, bendF = -f, bendB = f; // elbows point backward by default
+      if (attacking) {
+        if (pose === "ultimate") { hF = [f * 13, shoulderY - 34]; hB = [-f * 13, shoulderY - 34]; bendF = f; bendB = -f; }
+        else if (pose === "skill") { hF = [f * 31, shoulderY - 4 + dirUp * 0.5]; hB = [f * 17, shoulderY + 8]; }
+        else { hF = [f * (30 + (1 - punchT) * 9), shoulderY + 5 + dirUp]; hB = [-f * 15, shoulderY + 12]; }
+      } else if (this.guardActive) { hF = [f * 16, shoulderY + 15]; hB = [f * 8, shoulderY + 21]; bendF = f; }
+      else if (pose === "hit") { hF = [-f * 17, shoulderY - 6]; hB = [-f * 9, shoulderY - 12]; }
+      else if (!this.onGround) { hF = [f * 17, shoulderY + 12]; hB = [-f * 17, shoulderY + 15]; }
+      else if (running) {
+        hF = [f * 5 - runPhase * 17, shoulderY + 23];
+        hB = [-f * 5 + runPhase * 17, shoulderY + 24];
+      } else { hF = [f * 13, shoulderY + 29 + breathe]; hB = [-f * 13, shoulderY + 29 + breathe]; }
+
+      const shF = [f * 10, shoulderY], shB = [-f * 10, shoulderY + 1];
+      const hipF = [f * 5, hipY], hipB = [-f * 5, hipY];
 
       ctx.save();
       ctx.translate(cx + vib.x, bottom + vib.y);
       ctx.scale(this.squashX, this.squashY);
       ctx.rotate(lean);
-      ctx.translate(0, guardCrouch);
 
-      const white = this.flash > 0;
-      const mixW = (c) => white ? [c[0] + (255 - c[0]) * 0.55, c[1] + (255 - c[1]) * 0.55, c[2] + (255 - c[2]) * 0.55] : c;
-      const coat = mixW(bp.coat);
-      const accent = mixW(bp.accent);
-
-      // legs: simple capsules with run swing
-      const runPhase = Math.sin(this.anim * 13) * (this.pose === "run" ? 1 : 0);
-      const jumpTuck = !this.onGround ? 10 : 0;
-      ctx.lineCap = "round";
-      ctx.strokeStyle = rgb([28, 30, 44]);
-      ctx.lineWidth = 13;
-      for (const side of [-1, 1]) {
-        const swing = runPhase * 14 * side;
+      const armSeg = 17, legBend = f;
+      const drawLeg = (hip, ankle) => {
+        const [kx, ky] = this.limbJoint(hip[0], hip[1], ankle[0], ankle[1], thighL, legBend);
+        this.drawLimb(ctx, hip[0], hip[1], kx, ky, ankle[0], ankle[1], PANTS, 12);
+        // shoe
+        ctx.fillStyle = "rgb(16,18,28)";
+        ctx.beginPath(); ctx.ellipse(ankle[0] + f * 6, ankle[1] + 2.5, 13, 6.5, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = rgb(SHOES);
+        ctx.beginPath(); ctx.ellipse(ankle[0] + f * 6, ankle[1] + 2, 11.5, 5, 0, 0, TAU); ctx.fill();
+      };
+      const drawArm = (sh, hand, bend, isFront) => {
+        const [ex, ey] = this.limbJoint(sh[0], sh[1], hand[0], hand[1], armSeg, bend);
+        this.drawLimb(ctx, sh[0], sh[1], ex, ey, hand[0], hand[1], SLEEVE, 10);
+        if (bareArms) { // short sleeve stub
+          ctx.strokeStyle = rgb(JACKET);
+          ctx.lineCap = "round";
+          ctx.lineWidth = 13;
+          ctx.beginPath(); ctx.moveTo(sh[0], sh[1]);
+          ctx.lineTo(sh[0] + (ex - sh[0]) * 0.35, sh[1] + (ey - sh[1]) * 0.35); ctx.stroke();
+        }
+        // hand
+        ctx.fillStyle = "rgb(16,18,28)";
+        ctx.beginPath(); ctx.arc(hand[0], hand[1], 8, 0, TAU); ctx.fill();
+        ctx.fillStyle = rgb(SKIN);
+        ctx.beginPath(); ctx.arc(hand[0], hand[1], 6.3, 0, TAU); ctx.fill();
+      };
+      const torsoPath = () => {
+        const topY = shoulderY - 8, botY = hipY + 7;
         ctx.beginPath();
-        ctx.moveTo(side * 13, -legLen - 8);
-        ctx.lineTo(side * 13 + swing + this.facing * jumpTuck * 0.4, -6 - jumpTuck * (side === this.facing ? 1 : 0.4));
+        ctx.moveTo(-hipW - 2, botY);
+        ctx.lineTo(-shW, topY + 10);
+        ctx.quadraticCurveTo(-shW - 1, topY, -shW + 7, topY);
+        ctx.lineTo(shW - 7, topY);
+        ctx.quadraticCurveTo(shW + 1, topY, shW, topY + 10);
+        ctx.lineTo(hipW + 2, botY);
+        ctx.closePath();
+      };
+
+      // 1) rear arm + rear leg (behind torso)
+      drawArm(shB, hB, bendB, false);
+      drawLeg(hipB, aB);
+
+      // 2) hoodie hood (behind head/torso top)
+      if (of.style === "hoodie") {
+        ctx.fillStyle = rgb(shade(JACKET, 0.78));
+        ctx.beginPath(); ctx.ellipse(-f * 5, shoulderY - 12, 24, 16, 0, 0, TAU); ctx.fill();
+        ctx.strokeStyle = "rgb(16,18,28)";
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(-f * 5, shoulderY - 12, 24, 16, 0, 0, TAU); ctx.stroke();
+      }
+
+      // 3) torso with side shading
+      const grad = ctx.createLinearGradient(-shW, 0, shW, 0);
+      const litK = 1.08, darkK = 0.82;
+      grad.addColorStop(0, rgb(shade(JACKET, f > 0 ? darkK : litK)));
+      grad.addColorStop(1, rgb(shade(JACKET, f > 0 ? litK : darkK)));
+      torsoPath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = "rgb(16,18,28)";
+      ctx.lineWidth = 3;
+      torsoPath();
+      ctx.stroke();
+
+      // 4) outfit details (clipped to torso)
+      ctx.save();
+      torsoPath();
+      ctx.clip();
+      const topY = shoulderY - 8;
+      if (of.style === "suit") {
+        // shirt V
+        ctx.fillStyle = rgb(SHIRT);
+        ctx.beginPath();
+        ctx.moveTo(-8, topY); ctx.lineTo(8, topY); ctx.lineTo(0, topY + 26); ctx.closePath(); ctx.fill();
+        // lapels
+        ctx.fillStyle = rgb(shade(JACKET, 0.86));
+        ctx.beginPath(); ctx.moveTo(-9, topY); ctx.lineTo(-2, topY + 16); ctx.lineTo(-13, topY + 14); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(9, topY); ctx.lineTo(2, topY + 16); ctx.lineTo(13, topY + 14); ctx.closePath(); ctx.fill();
+        // tie
+        if (of.tie) {
+          ctx.fillStyle = rgb(mixW(of.tie));
+          ctx.beginPath();
+          ctx.moveTo(-3, topY + 6); ctx.lineTo(3, topY + 6);
+          ctx.lineTo(4.5, topY + 32); ctx.lineTo(0, topY + 40); ctx.lineTo(-4.5, topY + 32);
+          ctx.closePath(); ctx.fill();
+        }
+        // buttons line
+        ctx.strokeStyle = "rgba(16,18,28,0.35)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(0, topY + 28); ctx.lineTo(0, hipY + 4); ctx.stroke();
+      } else if (of.style === "hoodie") {
+        // kangaroo pocket + drawstrings + zip
+        ctx.strokeStyle = "rgba(16,18,28,0.5)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(0, topY + 4); ctx.lineTo(0, hipY + 4); ctx.stroke();
+        ctx.fillStyle = rgb(shade(JACKET, 0.85));
+        roundRect(ctx, -12, hipY - 16, 24, 16, 5); ctx.fill();
+        ctx.strokeStyle = "rgb(225,220,230)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-5, topY + 2); ctx.lineTo(-6, topY + 14); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(5, topY + 2); ctx.lineTo(6, topY + 14); ctx.stroke();
+      } else if (of.style === "sweater") {
+        // shirt collar + stripes
+        ctx.fillStyle = rgb(SHIRT);
+        ctx.beginPath(); ctx.moveTo(-8, topY); ctx.lineTo(8, topY); ctx.lineTo(0, topY + 12); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = rgb(mixW([238, 234, 222]));
+        for (let i = 0; i < 3; i++) {
+          ctx.fillRect(-shW, topY + 22 + i * 14, shW * 2, 5);
+        }
+      } else if (of.style === "polo") {
+        ctx.fillStyle = rgb(SHIRT);
+        ctx.beginPath(); ctx.moveTo(-9, topY); ctx.lineTo(-2, topY + 12); ctx.lineTo(-12, topY + 10); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(9, topY); ctx.lineTo(2, topY + 12); ctx.lineTo(12, topY + 10); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = "rgba(16,18,28,0.6)";
+        ctx.beginPath(); ctx.arc(0, topY + 14, 1.6, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.arc(0, topY + 21, 1.6, 0, TAU); ctx.fill();
+      } else { // tee
+        ctx.strokeStyle = "rgba(16,18,28,0.4)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, topY + 2, 8, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
+      }
+      ctx.restore();
+
+      // 5) front leg + front arm
+      drawLeg(hipF, aF);
+      // attack smear arc behind the striking hand
+      if (attacking && this.poseTimer > 0.05 && pose !== "ultimate") {
+        ctx.strokeStyle = rgb(bp.accent2, 0.4);
+        ctx.lineWidth = 9;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(f * 4, shoulderY + 14);
+        ctx.quadraticCurveTo(f * 26, shoulderY + dirUp - 10, hF[0], hF[1]);
         ctx.stroke();
       }
+      drawArm(shF, hF, bendF, true);
 
-      // torso coat
-      const tw = 62;
-      ctx.fillStyle = rgb(coat);
-      roundRect(ctx, -tw / 2, -legLen - torsoH - 2, tw, torsoH + 4, 20);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(12,14,24,0.55)";
-      ctx.lineWidth = 3;
-      roundRect(ctx, -tw / 2, -legLen - torsoH - 2, tw, torsoH + 4, 20);
-      ctx.stroke();
-      // shirt V + tie
-      ctx.fillStyle = "rgb(245,242,232)";
-      ctx.beginPath();
-      ctx.moveTo(-10, -legLen - torsoH + 2);
-      ctx.lineTo(10, -legLen - torsoH + 2);
-      ctx.lineTo(0, -legLen - torsoH + 26);
-      ctx.closePath(); ctx.fill();
-      ctx.fillStyle = rgb(accent);
-      roundRect(ctx, -4, -legLen - torsoH + 6, 8, torsoH * 0.5, 4);
-      ctx.fill();
-
-      // arms: rear behind torso, front swings / punches
-      const attacking = this.pose === "basic" || this.pose === "skill" || this.pose === "ultimate";
-      const punchT = attacking ? clamp(this.poseTimer / 0.16, 0, 1) : 0;
-      const punchLen = attacking ? 30 + (1 - punchT) * 8 : 0;
-      const armY = -legLen - torsoH + 16;
-      ctx.strokeStyle = rgb(coat);
-      ctx.lineWidth = 11;
-      // rear arm
-      ctx.beginPath();
-      ctx.moveTo(-this.facing * 18, armY);
-      ctx.lineTo(-this.facing * (26 + runPhase * 8), armY + 22);
-      ctx.stroke();
-      // front arm
-      ctx.beginPath();
-      ctx.moveTo(this.facing * 14, armY);
-      if (attacking) {
-        const dirUp = this.poseDir === "up" ? -28 : this.poseDir === "down" ? 16 : 0;
-        ctx.lineTo(this.facing * (30 + punchLen), armY + 8 + dirUp);
-      } else if (this.guardActive) {
-        ctx.lineTo(this.facing * 24, armY - 8);
-      } else {
-        ctx.lineTo(this.facing * (24 - runPhase * 8), armY + 22);
-      }
-      ctx.stroke();
-      // fist
-      if (attacking) {
-        const dirUp = this.poseDir === "up" ? -28 : this.poseDir === "down" ? 16 : 0;
-        ctx.fillStyle = "rgb(231,192,156)";
-        ctx.beginPath();
-        ctx.arc(this.facing * (30 + punchLen), armY + 8 + dirUp, 7, 0, TAU);
-        ctx.fill();
-      }
-
-      // signature hand prop
-      this.drawProp(ctx, armY, attacking, punchLen);
-
-      // head sprite
-      const headCY = -legLen - torsoH - headR + 6 + bob * 0.5;
+      // 6) head
+      const bob = running ? Math.sin(t * 11) * 3 : breathe * 1.6;
+      const headCY = shoulderY - 8 - headR + 4 + bob * 0.5;
       const img = this.head;
       ctx.save();
       ctx.translate(0, headCY);
-      ctx.rotate(lean * 0.4);
-      if (this.facing < 0) ctx.scale(-1, 1);
-      if (img && img.complete) ctx.drawImage(img, -headR, -headR, headR * 2, headR * 2);
+      ctx.rotate(lean * 0.35);
+      if (f < 0) ctx.scale(-1, 1);
+      if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, -headR, -headR, headR * 2, headR * 2);
       else {
         ctx.fillStyle = rgb(bp.accent);
         ctx.beginPath(); ctx.arc(0, 0, headR, 0, TAU); ctx.fill();
@@ -978,13 +1202,14 @@
       }
       ctx.restore();
 
+      // 7) signature hand prop at the front hand
+      this.drawProp(ctx, hF[0], hF[1]);
+
       ctx.restore();
     }
-    drawProp(ctx, armY, attacking, punchLen) {
+    drawProp(ctx, hx, hy) {
       const k = this.bp.key;
       const f = this.facing;
-      const hx = attacking ? f * (30 + punchLen) : f * 24;
-      const hy = attacking ? armY + 8 : armY + 22;
       ctx.lineCap = "round";
       if (k === "chen_ping_macro" || k === "chen_ping_lecture") {
         // chalk stick
@@ -1334,9 +1559,14 @@
       this.heads = headImages;
       this.backdrop = new Backdrop();
       this.killLine = new KillLine();
-      this.state = "menu";
+      this.state = "title";
       this.selected = 0;
       this.difficulty = 1;
+      this.score = 0;
+      this.highScore = 0;
+      this.stats = { maxCombo: 0, damageDealt: 0, perfects: 0 };
+      this.koFlash = 0;
+      this.pauseMoves = false;
       this.elapsed = 0;
       this.hitstop = 0;
       this.slowmo = 1;
@@ -1370,6 +1600,27 @@
       this.ticker = { index: 0, timer: 4.5, hold: 0, text: D.ticker[0] };
       this.fightSignal = false;
       this.autoplay = false;
+      this.wipe = 99; // screen transition timer
+      this.loadSettings();
+    }
+    loadSettings() {
+      try {
+        const s = JSON.parse(localStorage.getItem("meme_fighter_v1") || "{}");
+        if (typeof s.difficulty === "number") this.difficulty = clamp(s.difficulty, 0, 2);
+        if (typeof s.volume === "number") AU.setVolume(s.volume);
+        if (s.muted) AU.setMuted(true);
+        if (typeof s.highScore === "number") this.highScore = s.highScore;
+      } catch (err) { /* private mode etc. */ }
+    }
+    saveSettings() {
+      try {
+        localStorage.setItem("meme_fighter_v1", JSON.stringify({
+          difficulty: this.difficulty, volume: AU.volume, muted: AU.muted, highScore: this.highScore,
+        }));
+      } catch (err) { /* ignore */ }
+    }
+    addScore(source, pts) {
+      if (this.mode === "arcade" && source === this.player) this.score += pts;
     }
     bp(i) { return D.fighters[i]; }
     bpByKey(key) { return D.fighters.find(f => f.key === key); }
@@ -1406,6 +1657,8 @@
       this.arcadeClears = 0;
       this.campaignWinner = null;
       this.campaignVictory = false;
+      this.score = 0;
+      this.stats = { maxCombo: 0, damageDealt: 0, perfects: 0 };
       this.startMatch();
     }
     startMatch() {
@@ -1424,6 +1677,7 @@
       this.aiState = { decisionTimer: r * 0.9, moveAxis: 0, guardTimer: 0 };
       this.state = "match_intro";
       this.matchIntroTimer = S.matchIntroTime;
+      this.wipe = 0;
       this.setTicker(`进入 ${this.stage.name}。`, 2.0);
     }
     startVersusMatch() {
@@ -1442,6 +1696,13 @@
       this.matchIntroTimer = S.matchIntroTime;
       this.setTicker(`双人对战:进入 ${this.stage.name}。`, 2.0);
     }
+    resetInputs() {
+      for (const k of Object.keys(this.keys)) this.keys[k] = false;
+      for (const k of Object.keys(this.keys2)) this.keys2[k] = false;
+      this.pendingJump = 0;
+      this.pendingJump2 = 0;
+      this.attackBuffer = null;
+    }
     startRound() {
       this.player.reset(166, 1);
       this.opponent.reset(W - 298, -1);
@@ -1450,9 +1711,17 @@
       this.killLine.reset();
       this.pendingJump = 0;
       this.pendingJump2 = 0;
+      this.attackBuffer = null;
+      this.hitstop = 0;
+      this.slowmo = 1;
+      this.slowmoTimer = 0;
+      camera.trauma = 0;
+      camera.focus = null;
+      camera.focusTimer = 0;
       this.roundTime = S.roundTime;
       this.state = "round_intro";
       this.banner.timer = S.introTime;
+      this.wipe = 0;
       const n = this.playerRounds + this.opponentRounds + 1;
       announce(`ROUND ${n}`, { dur: S.introTime, size: 88 });
       AU.roundBell();
@@ -1469,7 +1738,12 @@
     }
     applyMove(fighter, result) {
       if (!result) return false;
-      if (result.projectiles && result.projectiles.length) this.projectiles.push(...result.projectiles);
+      if (result.projectiles && result.projectiles.length) {
+        this.projectiles.push(...result.projectiles);
+        // cap live projectiles per owner at 8: despawn oldest
+        const mine = this.projectiles.filter(p => p.owner === fighter.uid && !p.dead);
+        for (let i = 0; i < mine.length - 8; i++) mine[i].dead = true;
+      }
       addFloatText(result.label, fighter.cx, fighter.cy - 110, result.color || fighter.bp.accent2, !!result.isUlt);
       if (result.isUlt) {
         camera.addTrauma(0.34);
@@ -1509,6 +1783,9 @@
       this.banner.text = reason;
       this.state = "round_over";
       this.freezeTimer = S.roundFreezeTime;
+      this.attackBuffer = null;
+      this.player.setMove(0);
+      this.opponent.setMove(0);
       if (reason === "KO" || reason === "DOUBLE KO") {
         const loser = winner === this.player ? this.opponent : this.player;
         announce("K.O.", { dur: 1.3, size: 150, color: [255, 120, 120] });
@@ -1517,23 +1794,38 @@
         camera.addTrauma(0.85);
         camera.punchIn(loser, 1.0);
         this.slowmo = 0.28; this.slowmoTimer = 0.9;
+        this.koFlash = 0.14;
       } else {
         announce(reason === "TIME" ? "TIME UP" : reason, { dur: 1.2, size: 92 });
+      }
+      // round bonuses (arcade)
+      if (winner === this.player && this.mode === "arcade") {
+        let bonus = 5000 + Math.ceil(this.roundTime) * 50;
+        if (this.player.health >= S.maxHealth) {
+          bonus += 10000;
+          this.stats.perfects += 1;
+          announce("PERFECT!", { dur: 1.1, size: 64, color: [255, 230, 130] });
+        }
+        this.score += bonus;
+        this.banner.sub += `  +${bonus.toLocaleString()}分`;
       }
     }
     resolveMatchEnd() {
       if (this.mode === "versus") {
         this.campaignVictory = true;
-        this.campaignWinner = this.playerRounds >= S.roundsToWin ? this.player.bp : this.opponent.bp;
+        this.campaignWinnerIsP1 = this.playerRounds >= S.roundsToWin;
+        this.campaignWinner = this.campaignWinnerIsP1 ? this.player.bp : this.opponent.bp;
         this.state = "campaign_over";
         return;
       }
       if (this.playerRounds >= S.roundsToWin) {
         this.arcadeClears += 1;
+        this.score += 8000 * (this.difficulty + 1); // match-clear bonus scales with AI level
         if (this.matchIndex + 1 >= this.queue.length) {
           this.campaignVictory = true;
           this.campaignWinner = this.player.bp;
           this.state = "campaign_over";
+          if (this.score > this.highScore) { this.highScore = this.score; this.saveSettings(); }
         } else {
           this.matchIndex += 1;
           this.startMatch();
@@ -1544,29 +1836,52 @@
         this.campaignVictory = false;
         this.campaignWinner = this.opponent.bp;
         this.state = "campaign_over";
+        if (this.score > this.highScore) { this.highScore = this.score; this.saveSettings(); }
       }
     }
+    scoreGrade() {
+      const s = this.score;
+      if (!this.campaignVictory) return s >= 40000 ? "B" : "C";
+      if (s >= 90000) return "S";
+      if (s >= 65000) return "A";
+      if (s >= 45000) return "B";
+      return "C";
+    }
 
-    onProjectileHit(source, target, proj, blocked) {
+    onProjectileHit(source, target, proj, blocked, justGuard) {
       const heavy = proj.damage >= 10;
-      source.gainMeter(proj.damage * (blocked ? 0.65 : 1.0));
+      // zoning pays less meter; close-range pays more
+      const meterScale = proj.close ? 1.5 : (proj.travel > 700 ? 0.5 : 1.0);
+      source.gainMeter(proj.damage * (blocked ? 0.65 : 1.0) * meterScale);
       if (blocked) {
         this.hitstop = Math.max(this.hitstop, 0.05);
         camera.addTrauma(0.08);
-        sparkBurst(proj.x, proj.y, [140, 190, 255], 5, 240, 0.16, false);
-        addFloatText("BLOCK", target.cx, target.cy - 88, target.bp.accent2);
-        AU.block();
+        if (justGuard) {
+          sparkBurst(proj.x, proj.y, [150, 225, 255], 10, 360, 0.2, false);
+          addFloatText("JUST GUARD!", target.cx, target.cy - 104, [150, 225, 255], true);
+          AU.reflect();
+        } else {
+          sparkBurst(proj.x, proj.y, [140, 190, 255], 5, 240, 0.16, false);
+          addFloatText("BLOCK", target.cx, target.cy - 88, target.bp.accent2);
+          AU.block();
+        }
       } else {
         this.hitstop = Math.max(this.hitstop, heavy ? 0.13 : 0.07);
         camera.addTrauma(heavy ? 0.36 : 0.2);
         sparkBurst(proj.x, proj.y, source.bp.accent2, heavy ? 14 : 8, heavy ? 480 : 330, 0.2, heavy);
         addFloatText(`-${proj.damage}`, target.cx, target.cy - 88, D.C.gold);
+        if (proj.close) addFloatText("CLOSE!", target.cx, target.cy - 116, D.C.gold);
         if (heavy) AU.hitHeavy(); else AU.hitLight();
-        // combo tracking
-        if (source.comboTimer > 0) source.combo += 1;
-        else source.combo = 1;
+        // combo counter mirrors the victim's true-combo count
+        source.combo = target.comboTaken;
         source.comboTimer = 1.1;
         source.comboPop = 0.12;
+        // scoring + stats
+        this.addScore(source, proj.damage * 10 + (source.combo >= 2 ? source.combo * 25 : 0) + (proj.close ? 30 : 0));
+        if (source === this.player) {
+          this.stats.damageDealt += proj.damage;
+          if (source.combo > this.stats.maxCombo) this.stats.maxCombo = source.combo;
+        }
       }
     }
 
@@ -1618,6 +1933,14 @@
       }
       if (absD < 160) {
         const style = fighter.bp.aiStyle;
+        const zoner = style === "zone" || style === "control" || style === "caster" || style === "editor";
+        // zoners create space with a backdash (i-frames) when crowded
+        if (zoner && fighter.dashCd <= 0 && fighter.onGround && Math.random() < prof.aggression * 0.6) {
+          fighter.setMove(-toward);
+          fighter.dash();
+          state.moveAxis = -toward;
+          return;
+        }
         if ((style === "rush" || style === "brawler") && Math.random() < prof.aggression) {
           this.applyMove(fighter, fighter.useSkill(dir));
         } else if (Math.random() < 0.55) {
@@ -1651,20 +1974,39 @@
       if (target.onGround && Math.random() < 0.09) fighter.jump();
     }
 
-    updateProjectiles(dt) {
+    updateProjectiles(dt, collide = true) {
       if (!this.player || !this.opponent) return;
       const anchors = {
         [this.player.uid]: { x: this.player.cx, y: this.player.cy },
         [this.opponent.uid]: { x: this.opponent.cx, y: this.opponent.cy },
       };
+      // projectile clash: opposing shots trade 1-for-1
+      if (collide) {
+        for (let i = 0; i < this.projectiles.length; i++) {
+          const a = this.projectiles[i];
+          if (a.dead) continue;
+          for (let j = i + 1; j < this.projectiles.length; j++) {
+            const b = this.projectiles[j];
+            if (b.dead || a.owner === b.owner) continue;
+            const ra = a.rect, rb = b.rect;
+            if (ra.x < rb.x + rb.w && ra.x + ra.w > rb.x && ra.y < rb.y + rb.h && ra.y + ra.h > rb.y) {
+              a.dead = true; b.dead = true;
+              sparkBurst((a.x + b.x) / 2, (a.y + b.y) / 2, [240, 240, 250], 8, 320, 0.18, false);
+              AU.block();
+              break;
+            }
+          }
+        }
+      }
       const kept = [];
       for (const p of this.projectiles) {
+        if (p.dead) continue;
         if (!p.update(dt, anchors)) continue;
         if (p.x < -200 || p.x > W + 200 || p.y < -220 || p.y > H + 220) continue;
         const source = p.owner === this.player.uid ? this.player : this.opponent;
         const target = source === this.player ? this.opponent : this.player;
         const r = p.rect, hb = target.hurtbox;
-        const overlap = r.x < hb.x + hb.w && r.x + r.w > hb.x && r.y < hb.y + hb.h && r.y + r.h > hb.y;
+        const overlap = collide && r.x < hb.x + hb.w && r.x + r.w > hb.x && r.y < hb.y + hb.h && r.y + r.h > hb.y;
         if (target.reflectTimer > 0 && overlap) {
           p.owner = target.uid;
           p.anchorOwner = target.uid;
@@ -1677,9 +2019,17 @@
           continue;
         }
         if (overlap) {
+          // true-combo damage scaling: decays toward 55% (anti-cheese)
+          const nextCombo = (target.comboTakenTimer > 0 || target.hitstun > 0) ? target.comboTaken + 1 : 1;
+          if (nextCombo >= 3) {
+            p.damage = Math.max(2, Math.round(p.damage * Math.max(0.55, 1 - 0.08 * (nextCombo - 1))));
+          }
+          // approach incentive: point-blank hits do 25% more
+          if (Math.abs(source.cx - target.cx) < 260) { p.damage = Math.round(p.damage * 1.25); p.close = true; }
+          p.travel = Math.abs(p.x - p.spawnX);
           const knockDir = target.cx >= source.cx ? 1 : -1;
-          const [landed, blocked] = target.takeDamage(p.damage, knockDir, p.knockbackY);
-          if (landed) this.onProjectileHit(source, target, p, blocked);
+          const [landed, blocked, justGuard] = target.takeDamage(p.damage, knockDir, p.knockbackY);
+          if (landed) this.onProjectileHit(source, target, p, blocked, justGuard);
           continue;
         }
         kept.push(p);
@@ -1737,8 +2087,10 @@
         this.slowmoTimer -= dt;
         if (this.slowmoTimer <= 0) this.slowmo = 1;
       }
+      this.koFlash = Math.max(0, this.koFlash - dt);
+      this.wipe += dt;
 
-      if (this.state === "menu" || this.paused) return;
+      if (this.state === "menu" || this.state === "title" || this.paused) return;
 
       camera.update(dt, this.player, this.opponent);
 
@@ -1758,6 +2110,13 @@
         return;
       }
       if (this.state === "round_over") {
+        // keep simulating physics in slow-mo so the KO fall plays out dramatically
+        if (this.player && this.opponent) {
+          const sdt = dt * this.slowmo;
+          this.player.update(sdt, W);
+          this.opponent.update(sdt, W);
+          this.updateProjectiles(sdt, false);
+        }
         this.freezeTimer -= dt;
         if (this.freezeTimer <= 0) {
           if (this.playerRounds >= S.roundsToWin || this.opponentRounds >= S.roundsToWin) this.resolveMatchEnd();
@@ -1817,6 +2176,19 @@
       this.opponent.faceTarget(this.player.cx);
       this.player.update(gdt, W);
       this.opponent.update(gdt, W);
+      // pushboxes: soft horizontal separation (dashes can cross through)
+      if (this.player.dashTimer <= 0 && this.opponent.dashTimer <= 0) {
+        const ah = this.player.hurtbox, bh = this.opponent.hurtbox;
+        const vOverlap = Math.min(ah.y + ah.h, bh.y + bh.h) - Math.max(ah.y, bh.y);
+        const hOverlap = Math.min(ah.x + ah.w, bh.x + bh.w) - Math.max(ah.x, bh.x);
+        if (vOverlap > 40 && hOverlap > 0) {
+          const push = Math.min(hOverlap / 2, 340 * gdt);
+          const dir = this.player.cx <= this.opponent.cx ? -1 : 1;
+          const lim = (f, x) => clamp(x, S.stageMargin, W - S.stageMargin - f.w);
+          this.player.x = lim(this.player, this.player.x + dir * push);
+          this.opponent.x = lim(this.opponent, this.opponent.x - dir * push);
+        }
+      }
       this.updateProjectiles(gdt);
       this.updateKillLine(gdt);
 
@@ -1851,6 +2223,9 @@
         ? "双人对战 · BO3"
         : `Arcade ${this.matchIndex + 1}/${S.arcadeMatches} · ${this.difficultyProfile().name}`;
       strokedText(ctx, modeLabel, W / 2, 94, font(13, true), "rgb(177,188,210)", 0);
+      if (this.mode === "arcade") {
+        strokedText(ctx, `SCORE ${this.score.toLocaleString()}`, W / 2, 128, font(16, true), rgb(D.C.gold), 4);
+      }
 
       // combo counters
       for (const [f, x, align] of [[p, 460, "left"], [o, W - 460, "right"]]) {
@@ -1871,71 +2246,130 @@
       strokedText(ctx, this.ticker.text, W / 2, H - 34, font(15, true), "rgb(247,246,241)", 0);
     }
     drawHealthBlock(ctx, f, x, flip) {
-      ctx.fillStyle = "rgba(15,19,31,0.84)";
-      roundRect(ctx, x, 16, 418, 128, 20); ctx.fill();
-      ctx.strokeStyle = "rgba(248,227,176,0.7)";
+      // slanted translucent backplate with a gold light edge
+      slantPath(ctx, x, 16, 418, 112, flip ? -14 : 14);
+      const bgGrad = ctx.createLinearGradient(x, 16, x, 128);
+      bgGrad.addColorStop(0, "rgba(10,14,26,0.85)");
+      bgGrad.addColorStop(1, "rgba(14,18,32,0.55)");
+      ctx.fillStyle = bgGrad;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(248,227,176,0.55)";
       ctx.lineWidth = 2;
-      roundRect(ctx, x, 16, 418, 128, 20); ctx.stroke();
+      slantPath(ctx, x, 16, 418, 112, flip ? -14 : 14);
+      ctx.stroke();
+      ctx.strokeStyle = rgb(f.bp.accent, 0.9);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      if (flip) { ctx.moveTo(x + 432, 16); ctx.lineTo(x + 418, 128); }
+      else { ctx.moveTo(x + 14, 16); ctx.lineTo(x, 128); }
+      ctx.stroke();
 
-      // portrait token
+      // portrait token in slanted frame
       const img = f.head;
-      const tx = flip ? x + 418 - 14 - 76 : x + 14;
-      if (img && img.complete) ctx.drawImage(img, tx, 26, 76, 76);
-      ctx.font = font(17, true);
+      const tx = flip ? x + 418 - 14 - 78 : x + 16;
+      ctx.save();
+      slantPath(ctx, tx, 24, 78, 78, flip ? -8 : 8);
+      ctx.clip();
+      if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, tx - 4, 22, 88, 88);
+      ctx.restore();
+
+      // name (italic, fighting-game style)
+      ctx.font = `italic bold 17px ${'"Microsoft YaHei", sans-serif'}`;
       ctx.textAlign = flip ? "right" : "left";
       ctx.textBaseline = "middle";
+      ctx.lineWidth = 4; ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgba(10,12,22,0.9)";
+      const nx = flip ? tx - 14 : x + 108, ny = 36;
+      ctx.strokeText(f.bp.name, nx, ny);
       ctx.fillStyle = "rgb(247,246,241)";
-      ctx.fillText(f.bp.name, flip ? tx - 12 : x + 102, 38);
+      ctx.fillText(f.bp.name, nx, ny);
 
-      const bx = flip ? x + 16 : x + 102;
-      const bw = 296;
-      // health with ghost
-      const ghostRatio = clamp(f.displayedHealth / S.maxHealth, 0, 1);
-      ctx.fillStyle = "rgb(46,52,68)";
-      roundRect(ctx, bx, 54, bw, 22, 10); ctx.fill();
-      ctx.fillStyle = "rgba(255,120,110,0.85)";
-      if (ghostRatio > 0) { roundRect(ctx, bx + 2, 56, (bw - 4) * ghostRatio, 18, 8); ctx.fill(); }
+      const bx = flip ? x + 14 : x + 106;
+      const bw = 290;
       const belowLine = f.healthRatio <= S.lowHealthThreshold;
-      ctx.fillStyle = belowLine
-        ? `rgba(255,${93 + Math.abs(Math.sin(this.elapsed * 8)) * 80},161,1)`
+      const ghostRatio = clamp(f.displayedHealth / S.maxHealth, 0, 1);
+      const hpColor = belowLine
+        ? `rgba(255,${93 + Math.abs(Math.sin(this.elapsed * 8)) * 80 | 0},161,1)`
         : rgb(f.bp.accent);
-      if (f.healthRatio > 0) { roundRect(ctx, bx + 2, 56, (bw - 4) * f.healthRatio, 18, 8); ctx.fill(); }
-      ctx.strokeStyle = "rgb(248,236,212)";
-      ctx.lineWidth = 2;
-      roundRect(ctx, bx, 54, bw, 22, 10); ctx.stroke();
-      // 牢A execution threshold tick on the health bar
-      const lineX = bx + 2 + (bw - 4) * S.lowHealthThreshold;
-      ctx.strokeStyle = belowLine ? "rgb(255,93,161)" : "rgba(255,93,161,0.75)";
+      // health: slanted, segmented, mirrored drain
+      slantBar(ctx, bx, 50, bw, 24, {
+        back: "rgb(42,48,64)",
+        fills: [[ghostRatio, "rgba(255,120,110,0.85)"], [f.healthRatio, hpColor]],
+        ticks: 10,
+      }, flip, flip ? -8 : 8);
+      // 牢A execution threshold marker
+      const lineFrac = flip ? 1 - S.lowHealthThreshold : S.lowHealthThreshold;
+      const lineX = bx + bw * lineFrac + (flip ? -2 : 10);
+      ctx.strokeStyle = belowLine ? "rgb(255,93,161)" : "rgba(255,93,161,0.8)";
       ctx.lineWidth = belowLine ? 3 : 2;
-      ctx.beginPath(); ctx.moveTo(lineX, 50); ctx.lineTo(lineX, 80); ctx.stroke();
-      if (belowLine) {
-        strokedText(ctx, "斩杀线", lineX, 44, font(11, true), "rgb(255,150,195)", 3);
-      }
-      // guard
-      ctx.fillStyle = "rgb(39,43,60)";
-      roundRect(ctx, bx, 82, bw, 10, 5); ctx.fill();
-      ctx.fillStyle = rgb(f.bp.accent2);
-      if (f.guardRatio > 0) { roundRect(ctx, bx + 1, 83, (bw - 2) * f.guardRatio, 8, 4); ctx.fill(); }
-      // meter
+      ctx.beginPath(); ctx.moveTo(lineX + 3, 47); ctx.lineTo(lineX - 3, 77); ctx.stroke();
+      if (belowLine) strokedText(ctx, "斩杀线", lineX, 42, font(11, true), "rgb(255,150,195)", 3);
+      // guard gauge
+      slantBar(ctx, bx, 80, bw * 0.62, 9, {
+        back: "rgb(36,40,56)",
+        fills: [[f.guardRatio, rgb(f.bp.accent2)]],
+      }, flip, flip ? -4 : 4);
+      // super meter with pulse when full
       const full = f.meter >= S.maxMeter;
-      ctx.fillStyle = "rgb(32,24,42)";
-      roundRect(ctx, bx, 98, bw, 14, 7); ctx.fill();
-      const mw = (bw - 2) * f.meterRatio;
-      if (mw > 0) {
-        ctx.fillStyle = full ? `rgba(255,${160 + Math.sin(this.elapsed * 10) * 60},220,1)` : rgb(D.C.pink);
-        roundRect(ctx, bx + 1, 99, mw, 12, 6); ctx.fill();
-      }
+      slantBar(ctx, bx, 95, bw * 0.84, 13, {
+        back: "rgb(30,22,40)",
+        fills: [[f.meterRatio, full ? `rgba(255,${160 + Math.sin(this.elapsed * 10) * 60 | 0},220,1)` : rgb(D.C.pink)]],
+        ticks: 4,
+        edge: full ? "rgba(255,180,225,0.95)" : "rgba(180,150,190,0.6)",
+      }, flip, flip ? -5 : 5);
       if (full) {
-        strokedText(ctx, "U!", flip ? bx - 14 : bx + bw + 14, 105, font(15, true), rgb(D.C.pink), 3);
+        const ux = flip ? bx + bw * 0.84 + 26 : bx - 18;
+        strokedText(ctx, "U!", ux, 102, font(15 + Math.sin(this.elapsed * 10) * 2, true), rgb(D.C.pink), 3);
       }
-      // round pips
+      // round pips as diamonds
       for (let i = 0; i < S.roundsToWin; i++) {
         const won = i < (f === this.player ? this.playerRounds : this.opponentRounds);
-        const px = flip ? x + 418 - 30 - i * 24 : x + 30 + i * 24;
-        ctx.fillStyle = won ? rgb(f.bp.accent2) : "rgb(70,77,95)";
-        ctx.beginPath(); ctx.arc(px, 128, 8, 0, TAU); ctx.fill();
+        const px = flip ? bx + bw - 12 - i * 26 : bx + 12 + i * 26;
+        ctx.save();
+        ctx.translate(px, 119);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = won ? rgb(f.bp.accent2) : "rgb(62,68,86)";
+        ctx.fillRect(-6, -6, 12, 12);
+        ctx.strokeStyle = "rgba(248,236,212,0.55)";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(-6, -6, 12, 12);
+        ctx.restore();
       }
       ctx.textAlign = "left";
+    }
+    drawTitle(ctx) {
+      // dark vignette
+      ctx.fillStyle = "rgba(5,7,14,0.55)";
+      ctx.fillRect(0, 0, W, H);
+      const bob = Math.sin(this.elapsed * 2.2) * 8;
+      const imgL = this.heads["chen_ping_macro"];
+      const imgR = this.heads["zhang_weiwei_civil"];
+      ctx.save();
+      ctx.translate(W / 2 - 330, H / 2 - 130 + bob);
+      ctx.rotate(-0.12);
+      if (imgL && imgL.complete && imgL.naturalWidth > 0) ctx.drawImage(imgL, -95, -95, 190, 190);
+      ctx.restore();
+      ctx.save();
+      ctx.translate(W / 2 + 330, H / 2 - 130 - bob);
+      ctx.rotate(0.12);
+      ctx.scale(-1, 1);
+      if (imgR && imgR.complete && imgR.naturalWidth > 0) ctx.drawImage(imgR, -95, -95, 190, 190);
+      ctx.restore();
+
+      strokedText(ctx, "梗图格斗", W / 2, H / 2 - 175, font(96, true), "rgb(250,204,90)", 14);
+      strokedText(ctx, "陈平 VS 张维为", W / 2, H / 2 - 90, font(58, true), "rgb(247,246,241)", 10);
+      strokedText(ctx, "IRONIC ANIME MEME ARENA", W / 2, H / 2 - 38, font(20, true), "rgb(177,188,210)", 0);
+
+      const pulse = 0.55 + Math.abs(Math.sin(this.elapsed * 3)) * 0.45;
+      ctx.globalAlpha = pulse;
+      strokedText(ctx, "按任意键开始", W / 2, H / 2 + 70, font(30, true), "rgb(247,246,241)", 6);
+      ctx.globalAlpha = 1;
+
+      if (this.highScore > 0) {
+        strokedText(ctx, `最高分 HI-SCORE  ${this.highScore.toLocaleString()}`, W / 2, H / 2 + 130, font(20, true), rgb(D.C.gold), 4);
+      }
+      strokedText(ctx, "街机模式 · 双人对战 · 9 位梗图选手 · 牢A斩杀线", W / 2, H / 2 + 178, font(16), "rgb(177,188,210)", 0);
+      strokedText(ctx, "本作为梗图恶搞 Parody · v2.0 · 2026", W / 2, H - 36, font(13), "rgb(120,130,155)", 0);
     }
     drawMenu(ctx) {
       // headline rivals flanking the title
@@ -1945,13 +2379,13 @@
       ctx.save();
       ctx.translate(W / 2 - 360, 62 + bob);
       ctx.rotate(-0.1);
-      if (imgL && imgL.complete) ctx.drawImage(imgL, -52, -52, 104, 104);
+      if (imgL && imgL.complete && imgL.naturalWidth > 0) ctx.drawImage(imgL, -52, -52, 104, 104);
       ctx.restore();
       ctx.save();
       ctx.translate(W / 2 + 360, 62 - bob);
       ctx.rotate(0.1);
       ctx.scale(-1, 1);
-      if (imgR && imgR.complete) ctx.drawImage(imgR, -52, -52, 104, 104);
+      if (imgR && imgR.complete && imgR.naturalWidth > 0) ctx.drawImage(imgR, -52, -52, 104, 104);
       ctx.restore();
       // VS bolts
       ctx.strokeStyle = rgb(D.C.gold, 0.55 + Math.abs(Math.sin(this.elapsed * 5)) * 0.3);
@@ -1967,6 +2401,11 @@
       }
       strokedText(ctx, "梗图格斗:陈平 VS 张维为", W / 2, 52, font(44, true), "rgb(247,246,241)", 8);
       strokedText(ctx, "选择人设形态 · 方向 + J/K 改变招式 · 通关三场街机阶梯", W / 2, 96, font(18), "rgb(177,188,210)", 0);
+      if (this.highScore > 0) {
+        ctx.textAlign = "right";
+        strokedText(ctx, `HI-SCORE ${this.highScore.toLocaleString()}`, W - 40, 36, font(16, true), rgb(D.C.gold), 4);
+        ctx.textAlign = "left";
+      }
 
       const leftP = { x: 34, y: 130, w: 900, h: 680 };
       const rightP = { x: 960, y: 130, w: 486, h: 680 };
@@ -1998,24 +2437,33 @@
         if (sel) strokedText(ctx, "P1", rx + 24, ry + 18, font(14, true), rgb(bp.accent2), 3);
         if (sel2) strokedText(ctx, "P2", rx + cw - 24, ry + 18, font(14, true), rgb(D.C.pink), 3);
 
+        // accent ribbon along the card bottom
+        ctx.save();
+        roundRect(ctx, rx, ry, cw, chh, 18);
+        ctx.clip();
+        ctx.fillStyle = rgb(bp.accent, 0.16);
+        ctx.beginPath();
+        ctx.moveTo(rx, ry + chh); ctx.lineTo(rx + cw, ry + chh);
+        ctx.lineTo(rx + cw, ry + chh - 34); ctx.lineTo(rx, ry + chh - 56);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+
         const img = this.heads[bp.key];
-        if (img && img.complete) ctx.drawImage(img, rx + 14, ry + 36, 118, 118);
+        if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, rx + 12, ry + 32, 132, 132);
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.font = font(18, true);
+        ctx.font = font(19, true);
         ctx.fillStyle = "rgb(247,246,241)";
-        ctx.fillText(bp.name, rx + 142, ry + 42);
-        ctx.font = font(13, true);
+        ctx.fillText(bp.name, rx + 154, ry + 50);
+        ctx.font = `italic bold 13px "Microsoft YaHei", sans-serif`;
         ctx.fillStyle = rgb(bp.accent2);
-        ctx.fillText(bp.title, rx + 142, ry + 68);
+        ctx.fillText(bp.title, rx + 154, ry + 78);
         ctx.font = font(13);
         ctx.fillStyle = "rgb(177,188,210)";
-        ctx.fillText("J " + bp.basics.neutral, rx + 142, ry + 102);
-        ctx.fillText("K " + bp.skills.neutral, rx + 142, ry + 124);
-        ctx.fillText("U " + bp.ult, rx + 142, ry + 146);
+        ctx.fillText("U " + bp.ult, rx + 154, ry + 112);
         ctx.font = font(12);
-        ctx.fillStyle = rgb(bp.accent, 0.9);
-        ctx.fillText(bp.taunt, rx + 16, ry + 182);
+        ctx.fillStyle = rgb(bp.accent, 0.95);
+        ctx.fillText(bp.taunt, rx + 16, ry + 184);
       }
 
       // right detail panel
@@ -2028,7 +2476,7 @@
       ctx.font = font(16, true);
       ctx.fillStyle = rgb(bp.accent2);
       ctx.fillText(bp.title, rightP.x + 24, rightP.y + 72);
-      if (img && img.complete) ctx.drawImage(img, rightP.x + rightP.w - 168, rightP.y + 20, 144, 144);
+      if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, rightP.x + rightP.w - 168, rightP.y + 20, 144, 144);
       ctx.font = font(15, true);
       ctx.fillStyle = rgb(bp.accent);
       if (this.mode === "versus") {
@@ -2094,8 +2542,8 @@
       const ease = 1 - Math.pow(1 - t, 3);
       const pimg = this.player.head, oimg = this.opponent.head;
       const slide = (1 - ease) * 320;
-      if (pimg && pimg.complete) ctx.drawImage(pimg, cx + 56 - slide, cy + 80, 200, 200);
-      if (oimg && oimg.complete) ctx.drawImage(oimg, cx + cw2 - 256 + slide, cy + 80, 200, 200);
+      if (pimg && pimg.complete && pimg.naturalWidth > 0) ctx.drawImage(pimg, cx + 56 - slide, cy + 80, 200, 200);
+      if (oimg && oimg.complete && oimg.naturalWidth > 0) ctx.drawImage(oimg, cx + cw2 - 256 + slide, cy + 80, 200, 200);
       strokedText(ctx, "VS", W / 2, cy + 185, font(72 * (0.6 + ease * 0.4), true), "rgb(247,246,241)", 9);
       strokedText(ctx, this.player.bp.name, cx + 156, cy + 312, font(22, true), rgb(this.player.bp.accent2), 4);
       strokedText(ctx, this.opponent.bp.name, cx + cw2 - 156, cy + 312, font(22, true), rgb(this.opponent.bp.accent2), 4);
@@ -2122,22 +2570,35 @@
       roundRect(ctx, cx, cy, cw2, chh2, 28); ctx.stroke();
 
       const header = this.mode === "versus"
-        ? (winner === this.player.bp ? "P1 获胜!" : "P2 获胜!")
+        ? (this.campaignWinnerIsP1 ? "P1 获胜!" : "P2 获胜!")
         : (this.campaignVictory ? "街机通关!" : "挑战失败");
       strokedText(ctx, header, W / 2, cy + 64, font(52, true),
         this.campaignVictory ? "rgb(255,220,120)" : "rgb(247,246,241)", 8);
       const img = this.heads[winner.key];
-      if (img && img.complete) ctx.drawImage(img, W / 2 - 70, cy + 100, 140, 140);
-      strokedText(ctx, winner.name, W / 2, cy + 272, font(28, true), rgb(winner.accent2), 5);
+      if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, W / 2 - 70, cy + 96, 140, 140);
+      strokedText(ctx, winner.name, W / 2, cy + 262, font(26, true), rgb(winner.accent2), 5);
       const line = this.campaignVictory ? winner.victory : "阶梯重置,再排一场反讽对决。";
-      strokedText(ctx, `"${line}"`, W / 2, cy + 312, font(18), "rgb(220,226,240)", 0);
-      strokedText(ctx, `清场数: ${this.arcadeClears}/${S.arcadeMatches}`, W / 2, cy + 350, font(18, true), "rgb(177,188,210)", 0);
-      strokedText(ctx, "回车返回选人", W / 2, cy + 390, font(16, true), rgb(winner.accent), 0);
+      strokedText(ctx, `"${line}"`, W / 2, cy + 296, font(16), "rgb(220,226,240)", 0);
+      if (this.mode === "arcade") {
+        // results block: score, grade, stats
+        const grade = this.scoreGrade();
+        const gradeColor = grade === "S" ? [255, 215, 90] : grade === "A" ? [88, 208, 230] : grade === "B" ? [116, 214, 146] : [177, 188, 210];
+        const isRecord = this.score > 0 && this.score >= this.highScore;
+        strokedText(ctx, `总分 ${this.score.toLocaleString()}${isRecord ? "  ★新纪录!" : ""}`, W / 2 - 60, cy + 336, font(20, true), rgb(D.C.gold), 4);
+        strokedText(ctx, grade, W / 2 + 200, cy + 345, font(58, true), rgb(gradeColor), 8);
+        strokedText(ctx, `最大连击 ${this.stats.maxCombo}  ·  总伤害 ${this.stats.damageDealt}  ·  PERFECT ×${this.stats.perfects}  ·  清场 ${this.arcadeClears}/${S.arcadeMatches}`,
+          W / 2, cy + 372, font(15, true), "rgb(177,188,210)", 0);
+      }
+      strokedText(ctx, "回车返回选人", W / 2, cy + 404, font(15, true), rgb(winner.accent), 0);
     }
     draw(ctx) {
       const showBanner = this.state === "match_intro" || this.state === "round_intro" || this.state === "round_over";
       this.backdrop.draw(ctx, this.elapsed, showBanner);
 
+      if (this.state === "title") {
+        this.drawTitle(ctx);
+        return;
+      }
       if (this.state === "menu") {
         this.drawMenu(ctx);
         return;
@@ -2159,6 +2620,8 @@
       drawFloatTexts(ctx);
       ctx.restore();
 
+      ctx.drawImage(vignette, 0, 0);
+
       if (this.player && this.opponent) this.drawHud(ctx);
       drawAnnouncer(ctx);
 
@@ -2166,12 +2629,93 @@
       else if (this.state === "round_over") this.drawRoundOver(ctx);
       else if (this.state === "campaign_over" && this.campaignWinner) this.drawCampaignOver(ctx);
 
-      if (this.paused) {
-        ctx.fillStyle = "rgba(5,8,14,0.6)";
+      if (this.paused) this.drawPaused(ctx);
+
+      // KO white flash on top of everything
+      if (this.koFlash > 0) {
+        ctx.fillStyle = `rgba(255,252,244,${(this.koFlash / 0.14) * 0.75})`;
         ctx.fillRect(0, 0, W, H);
-        strokedText(ctx, "PAUSED", W / 2, H / 2 - 20, font(72, true), "rgb(247,246,241)", 9);
-        strokedText(ctx, "按 P 继续 · Esc 返回菜单", W / 2, H / 2 + 44, font(20), "rgb(177,188,210)", 0);
       }
+      // diagonal screen wipe on round/match transitions
+      if (this.wipe < 0.5) {
+        const tt = this.wipe / 0.5;
+        const ease = 1 - Math.pow(1 - tt, 2.4);
+        const bx2 = lerp(-620, W + 260, ease);
+        ctx.fillStyle = "rgba(8,10,18,0.92)";
+        ctx.beginPath();
+        ctx.moveTo(bx2 + 160, 0); ctx.lineTo(bx2 + 460, 0);
+        ctx.lineTo(bx2 + 300, H); ctx.lineTo(bx2, H);
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = rgb(D.C.gold, 0.85);
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(bx2 + 460, 0); ctx.lineTo(bx2 + 300, H);
+        ctx.stroke();
+      }
+    }
+    drawPaused(ctx) {
+      ctx.fillStyle = "rgba(5,8,14,0.72)";
+      ctx.fillRect(0, 0, W, H);
+      if (this.pauseMoves && this.player && this.opponent) {
+        strokedText(ctx, "招式表", W / 2, 70, font(40, true), "rgb(247,246,241)", 8);
+        const cols = [[this.player.bp, W / 2 - 600], [this.opponent.bp, W / 2 + 60]];
+        for (const [bp, x] of cols) {
+          ctx.fillStyle = "rgba(15,20,33,0.9)";
+          roundRect(ctx, x, 110, 540, 600, 22); ctx.fill();
+          ctx.strokeStyle = rgb(bp.accent, 0.8);
+          ctx.lineWidth = 2;
+          roundRect(ctx, x, 110, 540, 600, 22); ctx.stroke();
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.font = font(22, true);
+          ctx.fillStyle = rgb(bp.accent2);
+          ctx.fillText(bp.name, x + 24, 146);
+          const labels = { neutral: "J/K", up: "W+", down: "S+", left: "A+", right: "D+" };
+          let y = 192;
+          ctx.font = font(16, true);
+          ctx.fillStyle = "rgb(220,226,240)";
+          ctx.fillText("普攻 (J)", x + 24, y); ctx.fillText("技能 (K)", x + 290, y);
+          y += 32;
+          for (const d of DIRS) {
+            ctx.font = font(15);
+            ctx.fillStyle = "rgb(247,246,241)";
+            ctx.fillText(`${labels[d]}  ${bp.basics[d]}`, x + 24, y);
+            ctx.fillText(`${labels[d]}  ${bp.skills[d]}`, x + 290, y);
+            y += 34;
+          }
+          y += 12;
+          ctx.font = font(16, true);
+          ctx.fillStyle = rgb(bp.accent);
+          ctx.fillText(`U  必杀: ${bp.ult}`, x + 24, y);
+          y += 40;
+          ctx.font = font(14);
+          ctx.fillStyle = "rgb(177,188,210)";
+          ctx.fillText(bp.blurb, x + 24, y);
+        }
+        strokedText(ctx, "J 返回暂停菜单", W / 2, H - 60, font(16, true), "rgb(177,188,210)", 0);
+        return;
+      }
+      strokedText(ctx, "PAUSED", W / 2, H / 2 - 130, font(72, true), "rgb(247,246,241)", 9);
+      const lines = [
+        ["P", "继续游戏"],
+        ["J", "查看招式表"],
+        ["[ / ]", `音量  ${Math.round(AU.volume * 100)}%${AU.muted ? " (已静音)" : ""}`],
+        ["M", AU.muted ? "取消静音" : "静音"],
+        ["Esc", "返回主菜单"],
+      ];
+      let y = H / 2 - 50;
+      for (const [key, label] of lines) {
+        strokedText(ctx, key, W / 2 - 130, y, font(22, true), rgb(D.C.gold), 4);
+        ctx.textAlign = "left";
+        strokedText(ctx, label, W / 2 - 70, y, font(22), "rgb(247,246,241)", 4);
+        y += 46;
+      }
+      // volume bar
+      const vbx = W / 2 - 130, vby = y + 6;
+      ctx.fillStyle = "rgb(39,43,60)";
+      roundRect(ctx, vbx, vby, 280, 12, 6); ctx.fill();
+      ctx.fillStyle = AU.muted ? "rgb(100,105,125)" : rgb(D.C.gold);
+      if (AU.volume > 0) { roundRect(ctx, vbx + 1, vby + 1, 278 * AU.volume, 10, 5); ctx.fill(); }
     }
 
     // ---------- input ----------
@@ -2179,7 +2723,12 @@
       AU.unlock();
       AU.startMusic();
       const code = e.code;
-      if (code === "KeyM") { AU.setMuted(!AU.muted); return; }
+      if (code === "KeyM") { AU.setMuted(!AU.muted); this.saveSettings(); return; }
+      if (this.state === "title") {
+        this.state = "menu";
+        AU.menuSelect();
+        return;
+      }
       if (this.state === "menu") {
         const p2Picking = this.mode === "versus" && this.menuPhase === 1;
         const moveSel = (delta) => {
@@ -2191,9 +2740,9 @@
         else if (code === "KeyD" || code === "ArrowRight") moveSel(1);
         else if (code === "KeyW" || code === "ArrowUp") moveSel(-3);
         else if (code === "KeyS" || code === "ArrowDown") moveSel(3);
-        else if (code === "Digit1") this.difficulty = 0;
-        else if (code === "Digit2") this.difficulty = 1;
-        else if (code === "Digit3") this.difficulty = 2;
+        else if (code === "Digit1") { this.difficulty = 0; this.saveSettings(); }
+        else if (code === "Digit2") { this.difficulty = 1; this.saveSettings(); }
+        else if (code === "Digit3") { this.difficulty = 2; this.saveSettings(); }
         else if (code === "KeyV") {
           this.mode = this.mode === "arcade" ? "versus" : "arcade";
           this.menuPhase = 0;
@@ -2211,13 +2760,27 @@
         else if (code === "Escape" && p2Picking) this.menuPhase = 0;
         return;
       }
-      if (code === "Escape") { this.state = "menu"; this.paused = false; return; }
+      if (code === "Escape") {
+        // during a live match Esc opens pause first; quitting requires Esc while paused
+        if (this.state === "playing" && !this.paused) {
+          this.paused = true; this.pauseMoves = false;
+          return;
+        }
+        this.state = "menu"; this.paused = false; this.pauseMoves = false;
+        this.resetInputs();
+        return;
+      }
       if (this.state === "campaign_over") {
         if (code === "Enter" || code === "Space") this.state = "menu";
         return;
       }
-      if (code === "KeyP") { this.paused = !this.paused; return; }
-      if (this.paused) return;
+      if (code === "KeyP") { this.paused = !this.paused; this.pauseMoves = false; return; }
+      if (this.paused) {
+        if (code === "KeyJ") this.pauseMoves = !this.pauseMoves;
+        else if (code === "BracketLeft") { AU.setVolume(AU.volume - 0.1); this.saveSettings(); }
+        else if (code === "BracketRight") { AU.setVolume(AU.volume + 0.1); this.saveSettings(); }
+        return;
+      }
 
       if (code === "KeyA") this.keys.left = true;
       else if (code === "KeyD") this.keys.right = true;
@@ -2260,19 +2823,26 @@
       else if (code === "Space") this.keys.guard = false;
       else if (code === "KeyW") {
         this.keys.up = false;
-        if (this.pendingJump > 0 && this.state === "playing" && this.player && this.player.jump()) {
+        if (this.pendingJump > 0 && !this.paused && this.state === "playing" && this.player && this.player.jump()) {
           this.pendingJump = 0;
+          this.player.vy *= 0.66; // tap = short hop
+        } else if (!this.paused && this.player && !this.player.onGround && this.player.vy < -220) {
+          this.player.vy *= 0.55; // release mid-rise = cut the jump
         }
       }
-      if (this.mode === "versus") {
-        if (code === "ArrowLeft") this.keys2.left = false;
-        else if (code === "ArrowRight") this.keys2.right = false;
-        else if (code === "ArrowDown") this.keys2.down = false;
-        else if (code === "ShiftRight") this.keys2.guard = false;
-        else if (code === "ArrowUp") {
-          this.keys2.up = false;
-          if (this.pendingJump2 > 0 && this.state === "playing" && this.opponent && this.opponent.jump()) {
+      // keys2 must clear regardless of mode (avoids stuck keys after mode toggle)
+      if (code === "ArrowLeft") this.keys2.left = false;
+      else if (code === "ArrowRight") this.keys2.right = false;
+      else if (code === "ArrowDown") this.keys2.down = false;
+      else if (code === "ShiftRight") this.keys2.guard = false;
+      else if (code === "ArrowUp") {
+        this.keys2.up = false;
+        if (this.mode === "versus") {
+          if (this.pendingJump2 > 0 && !this.paused && this.state === "playing" && this.opponent && this.opponent.jump()) {
             this.pendingJump2 = 0;
+            this.opponent.vy *= 0.66;
+          } else if (!this.paused && this.opponent && !this.opponent.onGround && this.opponent.vy < -220) {
+            this.opponent.vy *= 0.55;
           }
         }
       }

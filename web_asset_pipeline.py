@@ -43,12 +43,13 @@ PHOTO_SPECS: tuple[FaceSpec, ...] = (
 
 def toonize(image: Image.Image) -> Image.Image:
     rgb = image.convert("RGB")
-    base = rgb.filter(ImageFilter.MedianFilter(size=5))
+    base = rgb.filter(ImageFilter.MedianFilter(size=3))
     base = base.filter(ImageFilter.SMOOTH_MORE)
-    base = ImageEnhance.Contrast(base).enhance(1.16)
-    base = ImageEnhance.Color(base).enhance(1.34)
-    base = ImageEnhance.Brightness(base).enhance(1.06)
-    poster = ImageOps.posterize(base, 5)
+    base = ImageEnhance.Contrast(base).enhance(1.12)
+    base = ImageEnhance.Color(base).enhance(1.42)
+    base = ImageEnhance.Brightness(base).enhance(1.08)
+    poster = ImageOps.posterize(base, 6)
+    poster = poster.filter(ImageFilter.UnsharpMask(radius=3, percent=80, threshold=4))
     return poster.convert("RGBA")
 
 

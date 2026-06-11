@@ -20,7 +20,7 @@ window.GAME_DATA = (() => {
     maxHealth: 220,
     maxMeter: 100,
     maxGuardHeat: 100,
-    guardCoolRate: 30,
+    guardCoolRate: 40,
     lowHealthThreshold: 0.3,
     introTime: 1.35,
     roundFreezeTime: 1.5,
@@ -47,6 +47,7 @@ window.GAME_DATA = (() => {
   const fighters = [
     {
       key: "chen_ping_macro",
+      outfit: { style: "suit", jacket: [196,124,62], shirt: [245,240,228], tie: null, pants: [70,56,48], shoes: [44,36,30] },
       scan: "月入¥2000,生活质量 > $3000",
       name: "陈平·购买力版",
       title: "Macro Card Zoner",
@@ -61,6 +62,7 @@ window.GAME_DATA = (() => {
     },
     {
       key: "chen_ping_lecture",
+      outfit: { style: "suit", jacket: [228,222,206], shirt: [250,248,240], tie: [184,142,84], pants: [205,200,186], shoes: [78,66,54] },
       scan: "学历:研究经济问题的物理学家",
       name: "陈平·讲堂版",
       title: "Lecture Hall Control",
@@ -75,6 +77,7 @@ window.GAME_DATA = (() => {
     },
     {
       key: "zhang_weiwei_civil",
+      outfit: { style: "suit", jacket: [30,48,78], shirt: [248,248,246], tie: [88,208,230], pants: [26,40,64], shoes: [30,30,36] },
       scan: "履历:走过一百多个国家",
       name: "张维为·文明版",
       title: "Civilizational Caster",
@@ -90,6 +93,7 @@ window.GAME_DATA = (() => {
     },
     {
       key: "zhang_weiwei_studio",
+      outfit: { style: "suit", jacket: [42,64,112], shirt: [248,248,246], tie: [167,226,255], pants: [36,54,94], shoes: [28,30,40] },
       scan: "手机:国产 信号:满格自信",
       name: "张维为·演播室版",
       title: "Studio Tempo Controller",
@@ -105,6 +109,7 @@ window.GAME_DATA = (() => {
     },
     {
       key: "lao_a_execute",
+      outfit: { style: "polo", jacket: [215,68,51], shirt: [240,230,214], tie: null, pants: [92,102,122], shoes: [52,54,62] },
       scan: "报名表:FLEA 成人组",
       name: "牢A·海报版",
       title: "Poster Irony Trickster",
@@ -119,6 +124,7 @@ window.GAME_DATA = (() => {
     },
     {
       key: "lao_a_budget",
+      outfit: { style: "hoodie", jacket: [62,36,76], shirt: [40,22,50], tie: null, pants: [44,28,56], shoes: [28,20,38] },
       scan: "净资产:低于斩杀线",
       name: "牢A·斩杀线版",
       title: "Execution-Line Rushdown",
@@ -133,6 +139,7 @@ window.GAME_DATA = (() => {
     },
     {
       key: "fengge_dongbei",
+      outfit: { style: "tee", jacket: [92,94,102], shirt: [64,66,74], tie: null, pants: [54,56,64], shoes: [206,206,210] },
       scan: "学历:建议凑个大专",
       name: "峰哥·东百版",
       title: "Rant Brawler",
@@ -147,6 +154,7 @@ window.GAME_DATA = (() => {
     },
     {
       key: "hu_chenfeng_reviewer",
+      outfit: { style: "sweater", jacket: [46,50,94], shirt: [238,234,222], tie: null, pants: [74,84,124], shoes: [238,238,238] },
       scan: "手机:iPhone顶配 自评:爆赞",
       name: "户晨风·评测版",
       title: "Tech Review Skirmisher",
@@ -161,6 +169,7 @@ window.GAME_DATA = (() => {
     },
     {
       key: "hu_xijin_editor",
+      outfit: { style: "suit", jacket: [74,62,60], shirt: [248,246,240], tie: [202,62,50], pants: [62,54,52], shoes: [38,32,30] },
       scan: "持仓:A股 浮亏:复杂",
       name: "胡锡进·社评版",
       title: "Editorial Pressure",

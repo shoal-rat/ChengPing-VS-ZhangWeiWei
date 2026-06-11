@@ -5,6 +5,7 @@ window.GameAudio = (() => {
   let ctx = null;
   let master = null;
   let muted = false;
+  let volume = 0.5;
 
   function ensure() {
     if (!ctx) {
@@ -12,7 +13,7 @@ window.GameAudio = (() => {
       if (!AC) return null;
       ctx = new AC();
       master = ctx.createGain();
-      master.gain.value = 0.5;
+      master.gain.value = volume;
       const comp = ctx.createDynamicsCompressor();
       comp.threshold.value = -18;
       comp.ratio.value = 6;
@@ -114,6 +115,11 @@ window.GameAudio = (() => {
     unlock() { ensure(); },
     setMuted(m) { muted = m; },
     get muted() { return muted; },
+    setVolume(v) {
+      volume = Math.max(0, Math.min(1, v));
+      if (master) master.gain.value = volume;
+    },
+    get volume() { return volume; },
 
     startMusic() {
       if (!ensure() || musicTimer) return;
@@ -122,6 +128,8 @@ window.GameAudio = (() => {
       musicStep = 0;
       musicTimer = setInterval(() => {
         if (muted) { nextTime = Math.max(nextTime, ctx.currentTime + 0.05); return; }
+        // background-tab catch-up guard: never schedule missed steps in the past
+        if (nextTime < ctx.currentTime) nextTime = ctx.currentTime + 0.05;
         while (nextTime < ctx.currentTime + 0.18) {
           scheduleMusicStep(nextTime, musicStep);
           musicStep += 1;
