@@ -384,8 +384,9 @@
   // ---------- fighter ----------
   const DIRS = ["neutral", "up", "down", "left", "right"];
   class Fighter {
-    constructor(bp, headImg, startX, facing, isPlayer) {
+    constructor(bp, headImg, startX, facing, isPlayer, uid) {
       this.bp = bp;
+      this.uid = uid || (isPlayer ? "p1" : "p2");
       this.head = headImg;
       this.w = S.fighterW;
       this.h = S.fighterH;
@@ -529,7 +530,7 @@
       const active = ySpeeds.slice(0, count);
       for (let i = 0; i < active.length; i++) {
         out.push(new Projectile({
-          owner: this.bp.key, label,
+          owner: this.uid, label,
           x: ox, y: oy + i * 10 - (active.length - 1) * 5,
           vx: dx * xSpeed, vy: active[i],
           damage, color: this.bp.accent, glow: this.bp.accent2, shape,
@@ -537,7 +538,7 @@
           radius: opts.radius ?? 18, width: opts.width ?? 44, height: opts.height ?? 22,
           waveAmp: opts.waveAmp ?? 0, waveSpeed: opts.waveSpeed ?? 0,
           gravity: opts.gravity ?? 0, floorLock: opts.floorLock ?? null,
-          returnDelay: opts.returnDelay ?? 0, anchorOwner: this.bp.key,
+          returnDelay: opts.returnDelay ?? 0, anchorOwner: this.uid,
           life: opts.life ?? 1.8,
           knockbackY: dir !== "up" ? -225 : -290,
         }));
@@ -548,10 +549,10 @@
       const out = [];
       for (let i = 0; i < count; i++) {
         out.push(new Projectile({
-          owner: this.bp.key, label, x: this.cx, y: this.cy, vx: 0, vy: 0,
+          owner: this.uid, label, x: this.cx, y: this.cy, vx: 0, vy: 0,
           damage, color: this.bp.accent, glow: this.bp.accent2, shape,
           behavior: "orbit", radius: shape === "orb" ? 16 : 18, width: 46, height: 24,
-          life: duration, anchorOwner: this.bp.key,
+          life: duration, anchorOwner: this.uid,
           orbitRadius: 80 + i * 20, orbitSpeed: i % 2 === 0 ? 220 : -220, orbitAngle: 90 * i,
           knockbackY: -180,
         }));
@@ -562,7 +563,7 @@
       const out = [];
       for (let i = 0; i < xPoints.length; i++) {
         out.push(new Projectile({
-          owner: this.bp.key, label,
+          owner: this.uid, label,
           x: xPoints[i], y: -40 - i * 28, vx: 0, vy: 720 + i * 20,
           damage,
           color: colorSwap ? this.bp.accent2 : this.bp.accent,
@@ -579,7 +580,7 @@
     }
     upAntiAir(label, shape = "beam", damage = 10) {
       return this.buffProjectiles([new Projectile({
-        owner: this.bp.key, label, x: this.cx, y: this.cy - 52, vx: 0, vy: -620,
+        owner: this.uid, label, x: this.cx, y: this.cy - 52, vx: 0, vy: -620,
         damage, color: this.bp.accent, glow: this.bp.accent2, shape,
         width: shape === "beam" ? 36 : 52, height: shape === "beam" ? 110 : 30,
         radius: 18, life: 1.2, knockbackY: -310,
@@ -588,7 +589,7 @@
     groundLine(label, dir, shape = "beam", damage = 9, xSpeed = 620) {
       const dx = this.worldHoriz(dir);
       return this.buffProjectiles([new Projectile({
-        owner: this.bp.key, label, x: this.cx + dx * 48, y: this.cy + 58,
+        owner: this.uid, label, x: this.cx + dx * 48, y: this.cy + 58,
         vx: dx * xSpeed, vy: 0,
         damage, color: this.bp.accent, glow: this.bp.accent2, shape,
         behavior: "ground_wave",
@@ -694,7 +695,7 @@
       } else if (k === "zhang_weiwei_studio") {
         if (dir === "neutral") {
           pr = [-160, 0, 160].map(off => new Projectile({
-            owner: this.bp.key, label, x: this.cx + off, y: 42, vx: 0, vy: 740,
+            owner: this.uid, label, x: this.cx + off, y: 42, vx: 0, vy: 740,
             damage: 9, color: this.bp.accent, glow: this.bp.accent2,
             shape: "beam", width: 32, height: 128, life: 1.7, knockbackY: -240,
           }));
@@ -1359,8 +1360,13 @@
       this.aiState = {};
       this.playerAiState = {};
       this.keys = { left: false, right: false, up: false, down: false, guard: false };
+      this.keys2 = { left: false, right: false, up: false, down: false, guard: false };
       this.pendingJump = 0;
+      this.pendingJump2 = 0;
       this.attackBuffer = null; // {button, time}
+      this.mode = "arcade"; // arcade | versus
+      this.menuPhase = 0;   // versus: 0 = P1 picking, 1 = P2 picking
+      this.selected2 = 2;
       this.ticker = { index: 0, timer: 4.5, hold: 0, text: D.ticker[0] };
       this.fightSignal = false;
       this.autoplay = false;
@@ -1420,6 +1426,22 @@
       this.matchIntroTimer = S.matchIntroTime;
       this.setTicker(`进入 ${this.stage.name}。`, 2.0);
     }
+    startVersusMatch() {
+      const pbp = this.bp(this.selected);
+      const obp = this.bp(this.selected2);
+      this.stage = D.stages[obp.stageTheme];
+      this.backdrop.setTheme(this.stage);
+      this.player = new Fighter(pbp, this.heads[pbp.key], 166, 1, true);
+      this.opponent = new Fighter(obp, this.heads[obp.key], W - 298, -1, false);
+      this.playerRounds = 0; this.opponentRounds = 0;
+      this.projectiles.length = 0;
+      floatTexts.length = 0;
+      this.killLine.reset();
+      this.matchIndex = 0;
+      this.state = "match_intro";
+      this.matchIntroTimer = S.matchIntroTime;
+      this.setTicker(`双人对战:进入 ${this.stage.name}。`, 2.0);
+    }
     startRound() {
       this.player.reset(166, 1);
       this.opponent.reset(W - 298, -1);
@@ -1427,6 +1449,7 @@
       floatTexts.length = 0;
       this.killLine.reset();
       this.pendingJump = 0;
+      this.pendingJump2 = 0;
       this.roundTime = S.roundTime;
       this.state = "round_intro";
       this.banner.timer = S.introTime;
@@ -1436,8 +1459,8 @@
       this.fightSignal = false;
       camera.x = W / 2; camera.y = H / 2; camera.zoom = 1;
     }
-    attackDirection() {
-      const k = this.keys;
+    attackDirection(keys) {
+      const k = keys || this.keys;
       if (k.up) return "up";
       if (k.down) return "down";
       if (k.left && !k.right) return "left";
@@ -1499,6 +1522,12 @@
       }
     }
     resolveMatchEnd() {
+      if (this.mode === "versus") {
+        this.campaignVictory = true;
+        this.campaignWinner = this.playerRounds >= S.roundsToWin ? this.player.bp : this.opponent.bp;
+        this.state = "campaign_over";
+        return;
+      }
       if (this.playerRounds >= S.roundsToWin) {
         this.arcadeClears += 1;
         if (this.matchIndex + 1 >= this.queue.length) {
@@ -1556,7 +1585,7 @@
       if (state.guardTimer > 0) fighter.guardRequested = true;
       else fighter.guardRequested = false;
 
-      const incoming = this.incomingProjectileNear(target.bp.key, fighter);
+      const incoming = this.incomingProjectileNear(target.uid, fighter);
       if (incoming && fighter.onGround && Math.random() < prof.guard) {
         state.guardTimer = prof.reaction * 1.1;
         fighter.guardRequested = true;
@@ -1625,20 +1654,20 @@
     updateProjectiles(dt) {
       if (!this.player || !this.opponent) return;
       const anchors = {
-        [this.player.bp.key]: { x: this.player.cx, y: this.player.cy },
-        [this.opponent.bp.key]: { x: this.opponent.cx, y: this.opponent.cy },
+        [this.player.uid]: { x: this.player.cx, y: this.player.cy },
+        [this.opponent.uid]: { x: this.opponent.cx, y: this.opponent.cy },
       };
       const kept = [];
       for (const p of this.projectiles) {
         if (!p.update(dt, anchors)) continue;
         if (p.x < -200 || p.x > W + 200 || p.y < -220 || p.y > H + 220) continue;
-        const source = p.owner === this.player.bp.key ? this.player : this.opponent;
+        const source = p.owner === this.player.uid ? this.player : this.opponent;
         const target = source === this.player ? this.opponent : this.player;
         const r = p.rect, hb = target.hurtbox;
         const overlap = r.x < hb.x + hb.w && r.x + r.w > hb.x && r.y < hb.y + hb.h && r.y + r.h > hb.y;
         if (target.reflectTimer > 0 && overlap) {
-          p.owner = target.bp.key;
-          p.anchorOwner = target.bp.key;
+          p.owner = target.uid;
+          p.anchorOwner = target.uid;
           p.vx *= -1;
           p.returning = false;
           addFloatText(target.bp.reflectLine || "REFLECT", target.cx, target.cy - 92, target.bp.accent2, !!target.bp.reflectLine);
@@ -1679,11 +1708,11 @@
       for (const f of [this.player, this.opponent]) {
         const hb = f.hurtbox;
         const overlap = band.x < hb.x + hb.w && band.x + band.w > hb.x && band.y < hb.y + hb.h && band.y + band.h > hb.y;
-        if (this.killLine.canHit(f.bp.key) && overlap) {
+        if (this.killLine.canHit(f.uid) && overlap) {
           const dir = f === this.player ? -1 : 1;
           const [landed, blocked] = f.takeDamage(this.killLine.damage, dir, -540);
           if (landed) {
-            this.killLine.hits.add(f.bp.key);
+            this.killLine.hits.add(f.uid);
             addFloatText("斩杀线!", f.cx, f.cy - 104, D.C.pink, true);
             sparkBurst(f.cx, f.cy, D.C.pink, 16, 520, 0.24, true);
             this.hitstop = Math.max(this.hitstop, 0.12);
@@ -1770,7 +1799,20 @@
       } else {
         this.updateAI(this.player, this.opponent, this.playerAiState, gdt);
       }
-      this.updateAI(this.opponent, this.player, this.aiState, gdt);
+      if (this.mode === "versus" && !this.autoplay) {
+        let axis2 = 0;
+        if (this.keys2.left && !this.keys2.right) axis2 = -1;
+        else if (this.keys2.right && !this.keys2.left) axis2 = 1;
+        this.opponent.setMove(axis2);
+        this.opponent.fastFall = this.keys2.down;
+        this.opponent.guardRequested = this.keys2.guard;
+        if (this.pendingJump2 > 0) {
+          this.pendingJump2 -= gdt;
+          if (this.pendingJump2 <= 0 && this.keys2.up) this.opponent.jump();
+        }
+      } else {
+        this.updateAI(this.opponent, this.player, this.aiState, gdt);
+      }
       this.player.faceTarget(this.opponent.cx);
       this.opponent.faceTarget(this.player.cx);
       this.player.update(gdt, W);
@@ -1805,7 +1847,10 @@
       roundRect(ctx, W / 2 - 80, 16, 160, 96, 20); ctx.stroke();
       const t = Math.max(0, Math.ceil(this.roundTime));
       strokedText(ctx, String(t).padStart(2, "0"), W / 2, 56, font(46, true), t <= 10 ? "rgb(255,130,120)" : "rgb(247,246,241)", 5);
-      strokedText(ctx, `Arcade ${this.matchIndex + 1}/${S.arcadeMatches} · ${this.difficultyProfile().name}`, W / 2, 94, font(13, true), "rgb(177,188,210)", 0);
+      const modeLabel = this.mode === "versus"
+        ? "双人对战 · BO3"
+        : `Arcade ${this.matchIndex + 1}/${S.arcadeMatches} · ${this.difficultyProfile().name}`;
+      strokedText(ctx, modeLabel, W / 2, 94, font(13, true), "rgb(177,188,210)", 0);
 
       // combo counters
       for (const [f, x, align] of [[p, 460, "left"], [o, W - 460, "right"]]) {
@@ -1940,15 +1985,18 @@
         const rx = leftP.x + 16 + col * (cw + 12);
         const ry = leftP.y + 16 + row * (chh + 14);
         const sel = i === this.selected;
-        if (sel) {
-          ctx.fillStyle = rgb(bp.accent2, 0.22 + Math.abs(Math.sin(this.elapsed * 2.2)) * 0.13);
+        const sel2 = this.mode === "versus" && i === this.selected2;
+        if (sel || sel2) {
+          ctx.fillStyle = rgb(sel ? bp.accent2 : D.C.pink, 0.22 + Math.abs(Math.sin(this.elapsed * 2.2)) * 0.13);
           roundRect(ctx, rx - 6, ry - 6, cw + 12, chh + 12, 22); ctx.fill();
         }
         ctx.fillStyle = "rgba(18,24,38,0.85)";
         roundRect(ctx, rx, ry, cw, chh, 18); ctx.fill();
-        ctx.strokeStyle = sel ? rgb(bp.accent) : "rgb(96,106,132)";
-        ctx.lineWidth = sel ? 3 : 2;
+        ctx.strokeStyle = sel ? rgb(bp.accent) : sel2 ? rgb(D.C.pink) : "rgb(96,106,132)";
+        ctx.lineWidth = sel || sel2 ? 3 : 2;
         roundRect(ctx, rx, ry, cw, chh, 18); ctx.stroke();
+        if (sel) strokedText(ctx, "P1", rx + 24, ry + 18, font(14, true), rgb(bp.accent2), 3);
+        if (sel2) strokedText(ctx, "P2", rx + cw - 24, ry + 18, font(14, true), rgb(D.C.pink), 3);
 
         const img = this.heads[bp.key];
         if (img && img.complete) ctx.drawImage(img, rx + 14, ry + 36, 118, 118);
@@ -1983,7 +2031,12 @@
       if (img && img.complete) ctx.drawImage(img, rightP.x + rightP.w - 168, rightP.y + 20, 144, 144);
       ctx.font = font(15, true);
       ctx.fillStyle = rgb(bp.accent);
-      ctx.fillText(`AI 难度: ${D.difficulties[this.difficulty].name}   (按 1 / 2 / 3)`, rightP.x + 24, rightP.y + 108);
+      if (this.mode === "versus") {
+        const phase = this.menuPhase === 0 ? "P1 选人中(回车确认)" : "P2 选人中(回车开打)";
+        ctx.fillText(`双人对战 · ${phase} · V 切回街机`, rightP.x + 24, rightP.y + 108);
+      } else {
+        ctx.fillText(`AI 难度: ${D.difficulties[this.difficulty].name} (按 1/2/3) · V 双人对战`, rightP.x + 24, rightP.y + 108);
+      }
       ctx.font = font(15);
       ctx.fillStyle = "rgb(177,188,210)";
       ctx.fillText(bp.blurb, rightP.x + 24, rightP.y + 142);
@@ -2013,7 +2066,10 @@
       ctx.fillText(`U  ${bp.ult}`, rightP.x + 24, rightP.y + 612);
       ctx.font = font(13);
       ctx.fillStyle = "rgb(177,188,210)";
-      ctx.fillText("移动 WASD · 防御 Space · 冲刺 L · 回车开始 · M 静音", rightP.x + 24, rightP.y + 648);
+      ctx.fillText("P1: WASD 移动 · J/K 攻击 · U 必杀 · L 冲刺 · Space 防御 · M 静音", rightP.x + 24, rightP.y + 648);
+      if (this.mode === "versus") {
+        ctx.fillText("P2: 方向键移动 · , . 攻击 · / 必杀 · ' 冲刺 · 右Shift 防御", rightP.x + 24, rightP.y + 668);
+      }
     }
     drawMatchIntro(ctx) {
       ctx.fillStyle = "rgba(6,8,16,0.6)";
@@ -2028,8 +2084,10 @@
       ctx.lineWidth = 2;
       roundRect(ctx, cx, cy, cw2, chh2, 28); ctx.stroke();
 
-      strokedText(ctx, `Arcade ${this.matchIndex + 1}/${S.arcadeMatches} · ${this.stage.name} · AI ${this.difficultyProfile().name}`,
-        W / 2, cy + 34, font(16, true), rgb(D.C.gold), 0);
+      const introLabel = this.mode === "versus"
+        ? `双人对战 · ${this.stage.name}`
+        : `Arcade ${this.matchIndex + 1}/${S.arcadeMatches} · ${this.stage.name} · AI ${this.difficultyProfile().name}`;
+      strokedText(ctx, introLabel, W / 2, cy + 34, font(16, true), rgb(D.C.gold), 0);
 
       // slam-in portraits
       const t = clamp((S.matchIntroTime - this.matchIntroTimer) / 0.3, 0, 1);
@@ -2063,7 +2121,10 @@
       ctx.lineWidth = 2;
       roundRect(ctx, cx, cy, cw2, chh2, 28); ctx.stroke();
 
-      strokedText(ctx, this.campaignVictory ? "街机通关!" : "挑战失败", W / 2, cy + 64, font(52, true),
+      const header = this.mode === "versus"
+        ? (winner === this.player.bp ? "P1 获胜!" : "P2 获胜!")
+        : (this.campaignVictory ? "街机通关!" : "挑战失败");
+      strokedText(ctx, header, W / 2, cy + 64, font(52, true),
         this.campaignVictory ? "rgb(255,220,120)" : "rgb(247,246,241)", 8);
       const img = this.heads[winner.key];
       if (img && img.complete) ctx.drawImage(img, W / 2 - 70, cy + 100, 140, 140);
@@ -2120,14 +2181,34 @@
       const code = e.code;
       if (code === "KeyM") { AU.setMuted(!AU.muted); return; }
       if (this.state === "menu") {
-        if (code === "KeyA" || code === "ArrowLeft") { this.selected = (this.selected + 8) % 9; AU.menuMove(); }
-        else if (code === "KeyD" || code === "ArrowRight") { this.selected = (this.selected + 1) % 9; AU.menuMove(); }
-        else if (code === "KeyW" || code === "ArrowUp") { this.selected = (this.selected + 6) % 9; AU.menuMove(); }
-        else if (code === "KeyS" || code === "ArrowDown") { this.selected = (this.selected + 3) % 9; AU.menuMove(); }
+        const p2Picking = this.mode === "versus" && this.menuPhase === 1;
+        const moveSel = (delta) => {
+          if (p2Picking) this.selected2 = (this.selected2 + delta + 9) % 9;
+          else this.selected = (this.selected + delta + 9) % 9;
+          AU.menuMove();
+        };
+        if (code === "KeyA" || code === "ArrowLeft") moveSel(-1);
+        else if (code === "KeyD" || code === "ArrowRight") moveSel(1);
+        else if (code === "KeyW" || code === "ArrowUp") moveSel(-3);
+        else if (code === "KeyS" || code === "ArrowDown") moveSel(3);
         else if (code === "Digit1") this.difficulty = 0;
         else if (code === "Digit2") this.difficulty = 1;
         else if (code === "Digit3") this.difficulty = 2;
-        else if (code === "Enter" || code === "Space") { AU.menuSelect(); this.resetCampaign(); }
+        else if (code === "KeyV") {
+          this.mode = this.mode === "arcade" ? "versus" : "arcade";
+          this.menuPhase = 0;
+          AU.menuMove();
+        }
+        else if (code === "Enter" || code === "Space") {
+          AU.menuSelect();
+          if (this.mode === "versus") {
+            if (this.menuPhase === 0) this.menuPhase = 1;
+            else { this.menuPhase = 0; this.startVersusMatch(); }
+          } else {
+            this.resetCampaign();
+          }
+        }
+        else if (code === "Escape" && p2Picking) this.menuPhase = 0;
         return;
       }
       if (code === "Escape") { this.state = "menu"; this.paused = false; return; }
@@ -2146,12 +2227,29 @@
         this.keys.up = true;
         if (this.state === "playing") this.pendingJump = 0.10;
       }
+      const vs = this.mode === "versus";
+      if (vs) {
+        if (code === "ArrowLeft") this.keys2.left = true;
+        else if (code === "ArrowRight") this.keys2.right = true;
+        else if (code === "ArrowDown") this.keys2.down = true;
+        else if (code === "ShiftRight") this.keys2.guard = true;
+        else if (code === "ArrowUp") {
+          this.keys2.up = true;
+          if (this.state === "playing") this.pendingJump2 = 0.10;
+        }
+      }
       if (this.state !== "playing") return;
       if (code === "KeyJ") this.playerAttack("basic");
       else if (code === "KeyK") this.playerAttack("skill");
       else if (code === "KeyU") this.playerAttack("ult");
       else if (code === "KeyL" && this.player) {
         if (this.player.dash()) this.setTicker(`${this.player.bp.name} 闪过了这条暴论。`, 1.1);
+      }
+      if (vs && this.opponent) {
+        if (code === "Comma") this.applyMove(this.opponent, this.opponent.useBasic(this.attackDirection(this.keys2)));
+        else if (code === "Period") this.applyMove(this.opponent, this.opponent.useSkill(this.attackDirection(this.keys2)));
+        else if (code === "Slash") this.applyMove(this.opponent, this.opponent.useUltimate());
+        else if (code === "Quote") this.opponent.dash();
       }
     }
     onKeyUp(e) {
@@ -2164,6 +2262,18 @@
         this.keys.up = false;
         if (this.pendingJump > 0 && this.state === "playing" && this.player && this.player.jump()) {
           this.pendingJump = 0;
+        }
+      }
+      if (this.mode === "versus") {
+        if (code === "ArrowLeft") this.keys2.left = false;
+        else if (code === "ArrowRight") this.keys2.right = false;
+        else if (code === "ArrowDown") this.keys2.down = false;
+        else if (code === "ShiftRight") this.keys2.guard = false;
+        else if (code === "ArrowUp") {
+          this.keys2.up = false;
+          if (this.pendingJump2 > 0 && this.state === "playing" && this.opponent && this.opponent.jump()) {
+            this.pendingJump2 = 0;
+          }
         }
       }
     }
@@ -2199,7 +2309,7 @@
   const game = new Game(headImages);
   window.__game = game; // playtest hook
   window.addEventListener("keydown", (e) => {
-    if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+    if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash", "Quote"].includes(e.code)) e.preventDefault();
     game.onKeyDown(e);
   });
   window.addEventListener("keyup", (e) => game.onKeyUp(e));

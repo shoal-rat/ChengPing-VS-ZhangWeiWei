@@ -31,11 +31,18 @@ python -m http.server 8000
 
 ## Controls
 
-- `A / D` move · `W` jump / double jump · `S` fast fall
-- `Space` guard · `L` dash
-- `J` + direction = 5 normals · `K` + direction = 5 skills
-- `U` ultimate (full meter) · `P` pause · `M` mute · `1/2/3` AI difficulty
-- `Enter` confirm · `Esc` back to menu
+**P1:** `A/D` move · `W` jump / double jump · `S` fast fall · `Space` guard · `L` dash ·
+`J`+direction = 5 normals · `K`+direction = 5 skills · `U` ultimate
+
+**P2 (versus mode, press `V` in menu):** arrow keys move · `,` normals · `.` skills ·
+`/` ultimate · `'` dash · Right `Shift` guard
+
+`P` pause · `M` mute · `1/2/3` AI difficulty · `Enter` confirm · `Esc` back to menu
+
+## Modes
+
+- **街机 Arcade** — 3-match ladder vs AI, final boss 牢A·斩杀线版
+- **双人对战 Versus** — local 2-player, best of 3 rounds, mirror matches allowed
 
 ## Game systems
 
