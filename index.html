@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>梗图格斗:陈平 VS 张维为 | ChengPing VS ZhangWeiwei</title>
+<meta name="description" content="Ironic anime meme arena fighter built from Chinese internet commentator memes. Parody game.">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #07090f;
+    overflow: hidden;
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #game {
+    background: #0a0e1a;
+    box-shadow: 0 0 60px rgba(88, 110, 230, 0.25);
+    border-radius: 6px;
+  }
+  #hint {
+    position: fixed;
+    bottom: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(177, 188, 210, 0.6);
+    font-size: 12px;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="1480" height="860"></canvas>
+<div id="hint">本作为梗图恶搞 Parody</div>
+<script src="js/data.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
