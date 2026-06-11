@@ -6,14 +6,14 @@ An ironic anime-style **meme arena fighter** built from Chinese internet comment
 
 ## ▶ Play in the browser
 
-Open `index.html` over any static server, e.g.:
+**Live build:** <http://weikezhang.cn/ChengPing-VS-ZhangWeiWei/>
+
+Or run locally — open `index.html` over any static server:
 
 ```bash
 python -m http.server 8000
 # then visit http://localhost:8000
 ```
-
-Or play the hosted build via GitHub Pages (if enabled for this repo).
 
 ## Roster (9 meme forms)
 

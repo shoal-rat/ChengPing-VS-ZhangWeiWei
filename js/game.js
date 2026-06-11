@@ -1893,6 +1893,33 @@
       ctx.textAlign = "left";
     }
     drawMenu(ctx) {
+      // headline rivals flanking the title
+      const bob = Math.sin(this.elapsed * 2.4) * 5;
+      const imgL = this.heads["chen_ping_macro"];
+      const imgR = this.heads["zhang_weiwei_civil"];
+      ctx.save();
+      ctx.translate(W / 2 - 360, 62 + bob);
+      ctx.rotate(-0.1);
+      if (imgL && imgL.complete) ctx.drawImage(imgL, -52, -52, 104, 104);
+      ctx.restore();
+      ctx.save();
+      ctx.translate(W / 2 + 360, 62 - bob);
+      ctx.rotate(0.1);
+      ctx.scale(-1, 1);
+      if (imgR && imgR.complete) ctx.drawImage(imgR, -52, -52, 104, 104);
+      ctx.restore();
+      // VS bolts
+      ctx.strokeStyle = rgb(D.C.gold, 0.55 + Math.abs(Math.sin(this.elapsed * 5)) * 0.3);
+      ctx.lineWidth = 4;
+      ctx.lineJoin = "round";
+      for (const sgn of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(W / 2 + sgn * 300, 40);
+        ctx.lineTo(W / 2 + sgn * 278, 58);
+        ctx.lineTo(W / 2 + sgn * 292, 64);
+        ctx.lineTo(W / 2 + sgn * 272, 84);
+        ctx.stroke();
+      }
       strokedText(ctx, "梗图格斗:陈平 VS 张维为", W / 2, 52, font(44, true), "rgb(247,246,241)", 8);
       strokedText(ctx, "选择人设形态 · 方向 + J/K 改变招式 · 通关三场街机阶梯", W / 2, 96, font(18), "rgb(177,188,210)", 0);
 
@@ -2089,6 +2116,7 @@
     // ---------- input ----------
     onKeyDown(e) {
       AU.unlock();
+      AU.startMusic();
       const code = e.code;
       if (code === "KeyM") { AU.setMuted(!AU.muted); return; }
       if (this.state === "menu") {

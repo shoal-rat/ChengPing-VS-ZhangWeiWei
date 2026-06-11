@@ -63,10 +63,75 @@ window.GameAudio = (() => {
     src.start(t0);
   }
 
+  // ---- tiny synth BGM loop (no audio files) ----
+  let musicTimer = null;
+  let musicStep = 0;
+  const BPM = 102;
+  // A natural-minor arcade loop: bass + arp + hat, 2 bars of 16 steps
+  const BASS = [45, 0, 45, 0, 48, 0, 43, 0, 45, 0, 45, 0, 41, 0, 43, 0,
+                45, 0, 45, 0, 48, 0, 50, 0, 52, 0, 48, 0, 43, 0, 43, 0];
+  const ARP = [69, 72, 76, 72, 71, 74, 79, 74, 69, 72, 76, 81, 71, 74, 79, 76,
+               69, 72, 76, 72, 74, 77, 81, 77, 76, 79, 84, 79, 74, 77, 79, 74];
+  const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+
+  function scheduleMusicStep(t, step) {
+    const s = step % 32;
+    const bass = BASS[s];
+    if (bass) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = mtof(bass);
+      g.gain.setValueAtTime(0.11, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+      osc.connect(g); g.connect(master);
+      osc.start(t); osc.stop(t + 0.3);
+    }
+    if (s % 2 === 0) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.value = mtof(ARP[s]);
+      g.gain.setValueAtTime(0.028, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+      osc.connect(g); g.connect(master);
+      osc.start(t); osc.stop(t + 0.16);
+    }
+    if (s % 4 === 2) {
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBuffer(0.03);
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass"; hp.frequency.value = 7000;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.05, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+      src.connect(hp); hp.connect(g); g.connect(master);
+      src.start(t);
+    }
+  }
+
   const api = {
     unlock() { ensure(); },
     setMuted(m) { muted = m; },
     get muted() { return muted; },
+
+    startMusic() {
+      if (!ensure() || musicTimer) return;
+      const stepDur = 60 / BPM / 4;
+      let nextTime = ctx.currentTime + 0.05;
+      musicStep = 0;
+      musicTimer = setInterval(() => {
+        if (muted) { nextTime = Math.max(nextTime, ctx.currentTime + 0.05); return; }
+        while (nextTime < ctx.currentTime + 0.18) {
+          scheduleMusicStep(nextTime, musicStep);
+          musicStep += 1;
+          nextTime += stepDur;
+        }
+      }, 60);
+    },
+    stopMusic() {
+      if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+    },
 
     hitLight() {
       burst({ dur: 0.07, vol: 0.5, low: 500, high: 3800 });
