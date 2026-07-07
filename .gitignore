@@ -5,3 +5,5 @@ __pycache__/
 .pytest_cache/
 assets/research/
 .claude/
+.venv/
+assets/game/_*.png

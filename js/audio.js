@@ -1,202 +1,124 @@
-// Synthesized SFX via WebAudio — no audio files needed.
+// 梗图格斗 2.0 — WebAudio synth: SFX presets + pentatonic BGM sequencer. Zero audio files.
 "use strict";
 
-window.GameAudio = (() => {
-  let ctx = null;
-  let master = null;
-  let muted = false;
-  let volume = 0.5;
+window.GAME_AUDIO = (() => {
+  let ctx = null, master = null, sfxBus = null, bgmBus = null, comp = null;
+  let muted = false, volume = 0.8;
+  let bgmTimer = null, bgmStep = 0, bgmKey = 0, bgmTempo = 132, bgmIntense = false;
 
   function ensure() {
-    if (!ctx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      ctx = new AC();
-      master = ctx.createGain();
-      master.gain.value = volume;
-      const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -18;
-      comp.ratio.value = 6;
-      master.connect(comp);
-      comp.connect(ctx.destination);
-    }
-    if (ctx.state === "suspended") ctx.resume();
-    return ctx;
+    if (ctx) return true;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) { return false; }
+    comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18; comp.ratio.value = 6; comp.attack.value = 0.002; comp.release.value = 0.12;
+    master = ctx.createGain(); master.gain.value = volume;
+    sfxBus = ctx.createGain(); sfxBus.gain.value = 1.0;
+    bgmBus = ctx.createGain(); bgmBus.gain.value = 0.30;
+    sfxBus.connect(comp); bgmBus.connect(comp);
+    comp.connect(master); master.connect(ctx.destination);
+    return true;
   }
 
-  function noiseBuffer(seconds) {
-    const rate = ctx.sampleRate;
-    const buffer = ctx.createBuffer(1, Math.max(1, (seconds * rate) | 0), rate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    return buffer;
+  function unlock() { if (ensure() && ctx.state === "suspended") ctx.resume(); }
+
+  // --- primitives ---------------------------------------------------------
+  function osc(type, freq, t0, dur, gain, bus, slideTo) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t0);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t0 + dur);
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
+    o.connect(g); g.connect(bus || sfxBus);
+    o.start(t0); o.stop(t0 + dur + 0.02);
   }
 
-  // One-shot oscillator with pitch + gain envelopes.
-  function blip({ type = "sine", from = 440, to = 220, dur = 0.12, vol = 0.4, delay = 0 }) {
-    if (!ensure() || muted) return;
-    const t0 = ctx.currentTime + delay;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(from, t0);
-    osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), t0 + dur);
-    gain.gain.setValueAtTime(vol, t0);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-    osc.connect(gain); gain.connect(master);
-    osc.start(t0); osc.stop(t0 + dur + 0.02);
+  function noise(t0, dur, gain, freq, type, bus) {
+    const n = Math.floor(ctx.sampleRate * dur);
+    const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const f = ctx.createBiquadFilter(); f.type = type || "lowpass"; f.frequency.value = freq || 1200;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
+    src.connect(f); f.connect(g); g.connect(bus || sfxBus);
+    src.start(t0); src.stop(t0 + dur + 0.02);
   }
 
-  function burst({ dur = 0.1, vol = 0.4, low = 200, high = 4500, delay = 0 }) {
-    if (!ensure() || muted) return;
-    const t0 = ctx.currentTime + delay;
-    const src = ctx.createBufferSource();
-    src.buffer = noiseBuffer(dur);
-    const band = ctx.createBiquadFilter();
-    band.type = "bandpass";
-    band.frequency.setValueAtTime(high, t0);
-    band.frequency.exponentialRampToValueAtTime(low, t0 + dur);
-    band.Q.value = 0.9;
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(vol, t0);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-    src.connect(band); band.connect(gain); gain.connect(master);
-    src.start(t0);
+  function thump(t0, freq, dur, gain) {
+    osc("sine", freq, t0, dur, gain, sfxBus, freq * 0.4);
   }
 
-  // ---- tiny synth BGM loop (no audio files) ----
-  let musicTimer = null;
-  let musicStep = 0;
-  const BPM = 102;
-  // A natural-minor arcade loop: bass + arp + hat, 2 bars of 16 steps
-  const BASS = [45, 0, 45, 0, 48, 0, 43, 0, 45, 0, 45, 0, 41, 0, 43, 0,
-                45, 0, 45, 0, 48, 0, 50, 0, 52, 0, 48, 0, 43, 0, 43, 0];
-  const ARP = [69, 72, 76, 72, 71, 74, 79, 74, 69, 72, 76, 81, 71, 74, 79, 76,
-               69, 72, 76, 72, 74, 77, 81, 77, 76, 79, 84, 79, 74, 77, 79, 74];
-  const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
-
-  function scheduleMusicStep(t, step) {
-    const s = step % 32;
-    const bass = BASS[s];
-    if (bass) {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = "triangle";
-      osc.frequency.value = mtof(bass);
-      g.gain.setValueAtTime(0.11, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
-      osc.connect(g); g.connect(master);
-      osc.start(t); osc.stop(t + 0.3);
-    }
-    if (s % 2 === 0) {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = "square";
-      osc.frequency.value = mtof(ARP[s]);
-      g.gain.setValueAtTime(0.028, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
-      osc.connect(g); g.connect(master);
-      osc.start(t); osc.stop(t + 0.16);
-    }
-    if (s % 4 === 2) {
-      const src = ctx.createBufferSource();
-      src.buffer = noiseBuffer(0.03);
-      const hp = ctx.createBiquadFilter();
-      hp.type = "highpass"; hp.frequency.value = 7000;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0.05, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
-      src.connect(hp); hp.connect(g); g.connect(master);
-      src.start(t);
-    }
-  }
-
-  const api = {
-    unlock() { ensure(); },
-    setMuted(m) { muted = m; },
-    get muted() { return muted; },
-    setVolume(v) {
-      volume = Math.max(0, Math.min(1, v));
-      if (master) master.gain.value = volume;
-    },
-    get volume() { return volume; },
-
-    startMusic() {
-      if (!ensure() || musicTimer) return;
-      const stepDur = 60 / BPM / 4;
-      let nextTime = ctx.currentTime + 0.05;
-      musicStep = 0;
-      musicTimer = setInterval(() => {
-        if (muted) { nextTime = Math.max(nextTime, ctx.currentTime + 0.05); return; }
-        // background-tab catch-up guard: never schedule missed steps in the past
-        if (nextTime < ctx.currentTime) nextTime = ctx.currentTime + 0.05;
-        while (nextTime < ctx.currentTime + 0.18) {
-          scheduleMusicStep(nextTime, musicStep);
-          musicStep += 1;
-          nextTime += stepDur;
-        }
-      }, 60);
-    },
-    stopMusic() {
-      if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
-    },
-
-    hitLight() {
-      burst({ dur: 0.07, vol: 0.5, low: 500, high: 3800 });
-      blip({ type: "square", from: 320, to: 90, dur: 0.08, vol: 0.28 });
-    },
-    hitHeavy() {
-      burst({ dur: 0.14, vol: 0.62, low: 160, high: 2600 });
-      blip({ type: "square", from: 220, to: 50, dur: 0.16, vol: 0.4 });
-      blip({ type: "sine", from: 90, to: 38, dur: 0.2, vol: 0.5 });
-    },
-    block() {
-      burst({ dur: 0.05, vol: 0.3, low: 1500, high: 6000 });
-      blip({ type: "triangle", from: 900, to: 600, dur: 0.06, vol: 0.2 });
-    },
-    guardBreak() {
-      burst({ dur: 0.3, vol: 0.55, low: 120, high: 1800 });
-      blip({ type: "sawtooth", from: 700, to: 120, dur: 0.34, vol: 0.34 });
-    },
-    shoot() { blip({ type: "triangle", from: 700, to: 320, dur: 0.07, vol: 0.16 }); },
-    skill() {
-      blip({ type: "sawtooth", from: 380, to: 660, dur: 0.1, vol: 0.18 });
-      blip({ type: "triangle", from: 900, to: 500, dur: 0.12, vol: 0.12, delay: 0.03 });
-    },
-    jump() { blip({ type: "sine", from: 240, to: 480, dur: 0.1, vol: 0.16 }); },
-    dash() { burst({ dur: 0.12, vol: 0.22, low: 900, high: 2600 }); },
-    land() { burst({ dur: 0.06, vol: 0.18, low: 150, high: 700 }); },
-    reflect() { blip({ type: "sine", from: 500, to: 1400, dur: 0.14, vol: 0.3 }); },
-    ult() {
-      blip({ type: "sawtooth", from: 130, to: 520, dur: 0.4, vol: 0.4 });
-      blip({ type: "square", from: 65, to: 260, dur: 0.4, vol: 0.3, delay: 0.06 });
-      burst({ dur: 0.5, vol: 0.3, low: 300, high: 5200, delay: 0.1 });
-    },
-    killLineWarn() {
-      blip({ type: "square", from: 880, to: 880, dur: 0.09, vol: 0.22 });
-      blip({ type: "square", from: 880, to: 880, dur: 0.09, vol: 0.22, delay: 0.16 });
-      blip({ type: "square", from: 1175, to: 1175, dur: 0.12, vol: 0.26, delay: 0.32 });
-    },
-    killLineFire() {
-      burst({ dur: 0.4, vol: 0.6, low: 100, high: 3000 });
-      blip({ type: "sawtooth", from: 1400, to: 90, dur: 0.45, vol: 0.4 });
-    },
-    ko() {
-      burst({ dur: 0.5, vol: 0.7, low: 60, high: 2000 });
-      blip({ type: "sine", from: 160, to: 30, dur: 0.7, vol: 0.6 });
-      blip({ type: "square", from: 320, to: 45, dur: 0.5, vol: 0.3, delay: 0.04 });
-    },
-    roundBell() {
-      blip({ type: "sine", from: 660, to: 660, dur: 0.5, vol: 0.34 });
-      blip({ type: "sine", from: 1320, to: 1320, dur: 0.4, vol: 0.14 });
-    },
-    announce() { blip({ type: "triangle", from: 520, to: 780, dur: 0.16, vol: 0.24 }); },
-    menuMove() { blip({ type: "triangle", from: 520, to: 640, dur: 0.05, vol: 0.14 }); },
-    menuSelect() {
-      blip({ type: "triangle", from: 520, to: 1040, dur: 0.16, vol: 0.26 });
-      blip({ type: "sine", from: 780, to: 1560, dur: 0.2, vol: 0.18, delay: 0.05 });
-    },
-    meterFull() { blip({ type: "sine", from: 700, to: 1400, dur: 0.22, vol: 0.2 }); },
+  // --- SFX presets ---------------------------------------------------------
+  const SFX = {
+    hit_light(t) { noise(t, 0.09, 0.5, 2600, "bandpass"); thump(t, 170, 0.12, 0.55); },
+    hit_heavy(t) { noise(t, 0.16, 0.7, 1600, "bandpass"); thump(t, 120, 0.22, 0.9); osc("square", 90, t, 0.12, 0.25, sfxBus, 45); },
+    hit_launch(t) { noise(t, 0.18, 0.6, 1900, "bandpass"); thump(t, 140, 0.2, 0.8); osc("sawtooth", 320, t, 0.22, 0.18, sfxBus, 720); },
+    whiff(t) { noise(t, 0.09, 0.22, 900, "highpass"); },
+    guard(t) { noise(t, 0.07, 0.4, 4200, "bandpass"); osc("triangle", 640, t, 0.08, 0.28, sfxBus, 500); },
+    just_guard(t) { osc("triangle", 880, t, 0.12, 0.4, sfxBus, 1320); osc("sine", 1760, t, 0.1, 0.2, sfxBus); },
+    guard_break(t) { noise(t, 0.3, 0.8, 900, "lowpass"); osc("sawtooth", 200, t, 0.35, 0.5, sfxBus, 60); },
+    throwgrab(t) { noise(t, 0.1, 0.4, 1400, "bandpass"); thump(t + 0.1, 100, 0.25, 1.0); },
+    dash(t) { noise(t, 0.12, 0.3, 2400, "highpass"); },
+    jump(t) { osc("sine", 240, t, 0.12, 0.3, sfxBus, 430); },
+    land(t) { thump(t, 150, 0.1, 0.4); noise(t, 0.06, 0.2, 800); },
+    shoot(t) { osc("square", 520, t, 0.1, 0.25, sfxBus, 260); noise(t, 0.06, 0.2, 3000, "highpass"); },
+    clash(t) { noise(t, 0.12, 0.6, 3200, "bandpass"); osc("triangle", 990, t, 0.14, 0.3, sfxBus, 660); },
+    reflect(t) { osc("sine", 660, t, 0.18, 0.4, sfxBus, 1320); osc("sine", 1320, t + 0.05, 0.16, 0.25, sfxBus, 1980); },
+    counter(t) { osc("square", 220, t, 0.1, 0.4, sfxBus, 110); osc("sine", 880, t + 0.06, 0.2, 0.35, sfxBus, 1760); },
+    teleport(t) { noise(t, 0.2, 0.35, 2600, "highpass"); osc("sine", 900, t, 0.2, 0.2, sfxBus, 160); },
+    slow_field(t) { osc("sine", 320, t, 0.5, 0.25, sfxBus, 110); },
+    ult_flash(t) { osc("sawtooth", 80, t, 0.7, 0.5, sfxBus, 320); noise(t, 0.5, 0.5, 700, "lowpass"); osc("sine", 1200, t + 0.1, 0.4, 0.3, sfxBus, 2400); },
+    ko(t) { thump(t, 90, 0.6, 1.2); noise(t, 0.5, 0.9, 800, "lowpass"); osc("sawtooth", 160, t, 0.6, 0.4, sfxBus, 40); },
+    round_go(t) { osc("square", 440, t, 0.12, 0.4, sfxBus); osc("square", 660, t + 0.13, 0.2, 0.4, sfxBus); },
+    select(t) { osc("square", 660, t, 0.06, 0.3, sfxBus); },
+    confirm(t) { osc("square", 550, t, 0.07, 0.3, sfxBus); osc("square", 880, t + 0.08, 0.12, 0.3, sfxBus); },
+    quote(t) { osc("triangle", 1180, t, 0.05, 0.22, sfxBus); },
+    timer(t) { osc("square", 990, t, 0.06, 0.3, sfxBus); },
   };
-  return api;
+
+  function sfx(name) {
+    if (muted || !ensure() || ctx.state === "suspended") return;
+    const fn = SFX[name];
+    if (fn) fn(ctx.currentTime + 0.001);
+  }
+
+  // --- BGM: 16-step pentatonic sequencer -----------------------------------
+  const RIFF = [0, 2, 4, 2, 0, 4, 7, 4, 9, 7, 4, 2, 0, 2, 4, 9];
+  const BASS = [0, 0, 7, 7, 5, 5, 7, 7];
+
+  function bgmTick() {
+    if (!ctx || muted) return;
+    const t = ctx.currentTime + 0.02;
+    const root = 220 * Math.pow(2, bgmKey / 12);
+    const i = bgmStep % 16;
+    if (i % 2 === 0) {
+      const b = root / 2 * Math.pow(2, BASS[(i / 2) | 0] / 12);
+      osc("triangle", b, t, 0.22, 0.5, bgmBus);
+    }
+    const m = RIFF[i];
+    const f = root * Math.pow(2, (m + 12) / 12);
+    osc(bgmIntense ? "square" : "triangle", f, t, 0.16, bgmIntense ? 0.20 : 0.16, bgmBus);
+    noise(t, 0.03, i % 4 === 2 ? 0.12 : 0.06, 8000, "highpass", bgmBus);
+    if (bgmIntense && i % 8 === 4) thump(t, 95, 0.15, 0.5);
+    bgmStep++;
+  }
+
+  function bgmStart(key, tempo, intense) {
+    if (!ensure()) return;
+    bgmKey = key || 0; bgmTempo = tempo || 132; bgmIntense = !!intense;
+    bgmStop();
+    bgmTimer = setInterval(bgmTick, (60 / bgmTempo / 2) * 1000);
+  }
+  function bgmStop() { if (bgmTimer) { clearInterval(bgmTimer); bgmTimer = null; } }
+  function bgmSetIntense(v) { bgmIntense = !!v; }
+
+  function setMuted(v) { muted = v; if (muted) bgmStop(); }
+  function setVolume(v) { volume = Math.max(0, Math.min(1, v)); if (master) master.gain.value = volume; }
+
+  return { unlock, sfx, bgmStart, bgmStop, bgmSetIntense, setMuted, setVolume,
+           get muted() { return muted; }, get volume() { return volume; } };
 })();

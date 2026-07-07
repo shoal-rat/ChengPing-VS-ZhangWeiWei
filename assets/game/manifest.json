@@ -1,0 +1,852 @@
+{
+ "chars": {
+  "chen": {
+   "poses": {
+    "idle": {
+     "f": "chars/chen_idle.png",
+     "w": 259,
+     "h": 442,
+     "ax": 130,
+     "ay": 440
+    },
+    "walk": {
+     "f": "chars/chen_walk.png",
+     "w": 293,
+     "h": 493,
+     "ax": 146,
+     "ay": 492
+    },
+    "jab": {
+     "f": "chars/chen_jab.png",
+     "w": 362,
+     "h": 457,
+     "ax": 88,
+     "ay": 456
+    },
+    "uppercut": {
+     "f": "chars/chen_uppercut.png",
+     "w": 300,
+     "h": 449,
+     "ax": 158,
+     "ay": 447
+    },
+    "guard": {
+     "f": "chars/chen_guard.png",
+     "w": 275,
+     "h": 396,
+     "ax": 130,
+     "ay": 394
+    },
+    "jump": {
+     "f": "chars/chen_jump.png",
+     "w": 292,
+     "h": 289,
+     "ax": 115,
+     "ay": 286
+    },
+    "hit": {
+     "f": "chars/chen_hit.png",
+     "w": 244,
+     "h": 411,
+     "ax": 112,
+     "ay": 409
+    },
+    "defeat": {
+     "f": "chars/chen_defeat.png",
+     "w": 249,
+     "h": 267,
+     "ax": 125,
+     "ay": 265
+    },
+    "cast": {
+     "f": "chars/chen_cast.png",
+     "w": 398,
+     "h": 417,
+     "ax": 173,
+     "ay": 416
+    },
+    "smash": {
+     "f": "chars/chen_smash.png",
+     "w": 342,
+     "h": 468,
+     "ax": 175,
+     "ay": 466
+    },
+    "dash": {
+     "f": "chars/chen_dash.png",
+     "w": 370,
+     "h": 356,
+     "ax": 29,
+     "ay": 355
+    },
+    "sweep": {
+     "f": "chars/chen_sweep.png",
+     "w": 449,
+     "h": 281,
+     "ax": 74,
+     "ay": 279
+    },
+    "win": {
+     "f": "chars/chen_win.png",
+     "w": 332,
+     "h": 510,
+     "ax": 165,
+     "ay": 509
+    },
+    "taunt": {
+     "f": "chars/chen_taunt.png",
+     "w": 229,
+     "h": 449,
+     "ax": 121,
+     "ay": 448
+    },
+    "channel": {
+     "f": "chars/chen_channel.png",
+     "w": 412,
+     "h": 454,
+     "ax": 243,
+     "ay": 452
+    },
+    "flykick": {
+     "f": "chars/chen_flykick.png",
+     "w": 412,
+     "h": 295,
+     "ax": 141,
+     "ay": 294
+    }
+   },
+   "portrait": "portraits/chen.png"
+  },
+  "zhang": {
+   "poses": {
+    "idle": {
+     "f": "chars/zhang_idle.png",
+     "w": 251,
+     "h": 439,
+     "ax": 127,
+     "ay": 437
+    },
+    "walk": {
+     "f": "chars/zhang_walk.png",
+     "w": 330,
+     "h": 461,
+     "ax": 173,
+     "ay": 460
+    },
+    "jab": {
+     "f": "chars/zhang_jab.png",
+     "w": 384,
+     "h": 418,
+     "ax": 203,
+     "ay": 416
+    },
+    "uppercut": {
+     "f": "chars/zhang_uppercut.png",
+     "w": 300,
+     "h": 462,
+     "ax": 172,
+     "ay": 460
+    },
+    "guard": {
+     "f": "chars/zhang_guard.png",
+     "w": 290,
+     "h": 400,
+     "ax": 139,
+     "ay": 398
+    },
+    "jump": {
+     "f": "chars/zhang_jump.png",
+     "w": 242,
+     "h": 279,
+     "ax": 102,
+     "ay": 277
+    },
+    "hit": {
+     "f": "chars/zhang_hit.png",
+     "w": 298,
+     "h": 408,
+     "ax": 132,
+     "ay": 406
+    },
+    "defeat": {
+     "f": "chars/zhang_defeat.png",
+     "w": 237,
+     "h": 286,
+     "ax": 103,
+     "ay": 284
+    },
+    "cast": {
+     "f": "chars/zhang_cast.png",
+     "w": 370,
+     "h": 400,
+     "ax": 162,
+     "ay": 399
+    },
+    "smash": {
+     "f": "chars/zhang_smash.png",
+     "w": 322,
+     "h": 447,
+     "ax": 166,
+     "ay": 443
+    },
+    "dash": {
+     "f": "chars/zhang_dash.png",
+     "w": 331,
+     "h": 348,
+     "ax": 24,
+     "ay": 344
+    },
+    "sweep": {
+     "f": "chars/zhang_sweep.png",
+     "w": 426,
+     "h": 279,
+     "ax": 259,
+     "ay": 275
+    },
+    "win": {
+     "f": "chars/zhang_win.png",
+     "w": 305,
+     "h": 482,
+     "ax": 149,
+     "ay": 478
+    },
+    "taunt": {
+     "f": "chars/zhang_taunt.png",
+     "w": 219,
+     "h": 451,
+     "ax": 104,
+     "ay": 450
+    },
+    "channel": {
+     "f": "chars/zhang_channel.png",
+     "w": 391,
+     "h": 443,
+     "ax": 233,
+     "ay": 442
+    },
+    "flykick": {
+     "f": "chars/zhang_flykick.png",
+     "w": 426,
+     "h": 305,
+     "ax": 92,
+     "ay": 301
+    }
+   },
+   "portrait": "portraits/zhang.png"
+  },
+  "huxijin": {
+   "poses": {
+    "idle": {
+     "f": "chars/huxijin_idle.png",
+     "w": 268,
+     "h": 392,
+     "ax": 121,
+     "ay": 391
+    },
+    "walk": {
+     "f": "chars/huxijin_walk.png",
+     "w": 256,
+     "h": 384,
+     "ax": 139,
+     "ay": 383
+    },
+    "jab": {
+     "f": "chars/huxijin_jab.png",
+     "w": 384,
+     "h": 364,
+     "ax": 141,
+     "ay": 363
+    },
+    "uppercut": {
+     "f": "chars/huxijin_uppercut.png",
+     "w": 280,
+     "h": 428,
+     "ax": 139,
+     "ay": 427
+    },
+    "guard": {
+     "f": "chars/huxijin_guard.png",
+     "w": 280,
+     "h": 364,
+     "ax": 138,
+     "ay": 363
+    },
+    "jump": {
+     "f": "chars/huxijin_jump.png",
+     "w": 300,
+     "h": 280,
+     "ax": 146,
+     "ay": 278
+    },
+    "hit": {
+     "f": "chars/huxijin_hit.png",
+     "w": 352,
+     "h": 380,
+     "ax": 156,
+     "ay": 377
+    },
+    "defeat": {
+     "f": "chars/huxijin_defeat.png",
+     "w": 232,
+     "h": 308,
+     "ax": 103,
+     "ay": 307
+    },
+    "cast": {
+     "f": "chars/huxijin_cast.png",
+     "w": 408,
+     "h": 355,
+     "ax": 146,
+     "ay": 354
+    },
+    "smash": {
+     "f": "chars/huxijin_smash.png",
+     "w": 298,
+     "h": 404,
+     "ax": 152,
+     "ay": 403
+    },
+    "dash": {
+     "f": "chars/huxijin_dash.png",
+     "w": 360,
+     "h": 303,
+     "ax": 21,
+     "ay": 302
+    },
+    "sweep": {
+     "f": "chars/huxijin_sweep.png",
+     "w": 391,
+     "h": 241,
+     "ax": 251,
+     "ay": 240
+    },
+    "win": {
+     "f": "chars/huxijin_win.png",
+     "w": 250,
+     "h": 439,
+     "ax": 126,
+     "ay": 436
+    },
+    "taunt": {
+     "f": "chars/huxijin_taunt.png",
+     "w": 281,
+     "h": 382,
+     "ax": 113,
+     "ay": 381
+    },
+    "channel": {
+     "f": "chars/huxijin_channel.png",
+     "w": 364,
+     "h": 377,
+     "ax": 205,
+     "ay": 376
+    },
+    "flykick": {
+     "f": "chars/huxijin_flykick.png",
+     "w": 355,
+     "h": 303,
+     "ax": 87,
+     "ay": 302
+    }
+   },
+   "portrait": "portraits/huxijin.png"
+  },
+  "fengge": {
+   "poses": {
+    "idle": {
+     "f": "chars/fengge_idle.png",
+     "w": 284,
+     "h": 448,
+     "ax": 144,
+     "ay": 447
+    },
+    "walk": {
+     "f": "chars/fengge_walk.png",
+     "w": 264,
+     "h": 448,
+     "ax": 140,
+     "ay": 445
+    },
+    "jab": {
+     "f": "chars/fengge_jab.png",
+     "w": 392,
+     "h": 432,
+     "ax": 169,
+     "ay": 431
+    },
+    "uppercut": {
+     "f": "chars/fengge_uppercut.png",
+     "w": 284,
+     "h": 468,
+     "ax": 143,
+     "ay": 465
+    },
+    "guard": {
+     "f": "chars/fengge_guard.png",
+     "w": 280,
+     "h": 412,
+     "ax": 136,
+     "ay": 409
+    },
+    "jump": {
+     "f": "chars/fengge_jump.png",
+     "w": 244,
+     "h": 312,
+     "ax": 119,
+     "ay": 310
+    },
+    "hit": {
+     "f": "chars/fengge_hit.png",
+     "w": 296,
+     "h": 416,
+     "ax": 172,
+     "ay": 414
+    },
+    "defeat": {
+     "f": "chars/fengge_defeat.png",
+     "w": 264,
+     "h": 296,
+     "ax": 121,
+     "ay": 294
+    },
+    "cast": {
+     "f": "chars/fengge_cast.png",
+     "w": 355,
+     "h": 396,
+     "ax": 158,
+     "ay": 395
+    },
+    "smash": {
+     "f": "chars/fengge_smash.png",
+     "w": 314,
+     "h": 451,
+     "ax": 163,
+     "ay": 448
+    },
+    "dash": {
+     "f": "chars/fengge_dash.png",
+     "w": 369,
+     "h": 342,
+     "ax": 24,
+     "ay": 341
+    },
+    "sweep": {
+     "f": "chars/fengge_sweep.png",
+     "w": 433,
+     "h": 255,
+     "ax": 211,
+     "ay": 254
+    },
+    "win": {
+     "f": "chars/fengge_win.png",
+     "w": 310,
+     "h": 497,
+     "ax": 156,
+     "ay": 493
+    },
+    "taunt": {
+     "f": "chars/fengge_taunt.png",
+     "w": 246,
+     "h": 456,
+     "ax": 115,
+     "ay": 455
+    },
+    "channel": {
+     "f": "chars/fengge_channel.png",
+     "w": 392,
+     "h": 442,
+     "ax": 227,
+     "ay": 441
+    },
+    "flykick": {
+     "f": "chars/fengge_flykick.png",
+     "w": 456,
+     "h": 287,
+     "ax": 140,
+     "ay": 285
+    }
+   },
+   "portrait": "portraits/fengge.png"
+  },
+  "huchenfeng": {
+   "poses": {
+    "idle": {
+     "f": "chars/huchenfeng_idle.png",
+     "w": 256,
+     "h": 416,
+     "ax": 130,
+     "ay": 415
+    },
+    "walk": {
+     "f": "chars/huchenfeng_walk.png",
+     "w": 248,
+     "h": 428,
+     "ax": 139,
+     "ay": 427
+    },
+    "jab": {
+     "f": "chars/huchenfeng_jab.png",
+     "w": 380,
+     "h": 404,
+     "ax": 155,
+     "ay": 403
+    },
+    "uppercut": {
+     "f": "chars/huchenfeng_uppercut.png",
+     "w": 224,
+     "h": 460,
+     "ax": 52,
+     "ay": 459
+    },
+    "guard": {
+     "f": "chars/huchenfeng_guard.png",
+     "w": 268,
+     "h": 400,
+     "ax": 135,
+     "ay": 399
+    },
+    "jump": {
+     "f": "chars/huchenfeng_jump.png",
+     "w": 248,
+     "h": 284,
+     "ax": 101,
+     "ay": 283
+    },
+    "hit": {
+     "f": "chars/huchenfeng_hit.png",
+     "w": 256,
+     "h": 388,
+     "ax": 128,
+     "ay": 387
+    },
+    "defeat": {
+     "f": "chars/huchenfeng_defeat.png",
+     "w": 220,
+     "h": 264,
+     "ax": 103,
+     "ay": 263
+    },
+    "cast": {
+     "f": "chars/huchenfeng_cast.png",
+     "w": 345,
+     "h": 388,
+     "ax": 153,
+     "ay": 387
+    },
+    "smash": {
+     "f": "chars/huchenfeng_smash.png",
+     "w": 267,
+     "h": 422,
+     "ax": 135,
+     "ay": 421
+    },
+    "dash": {
+     "f": "chars/huchenfeng_dash.png",
+     "w": 366,
+     "h": 332,
+     "ax": 33,
+     "ay": 331
+    },
+    "sweep": {
+     "f": "chars/huchenfeng_sweep.png",
+     "w": 388,
+     "h": 263,
+     "ax": 101,
+     "ay": 262
+    },
+    "win": {
+     "f": "chars/huchenfeng_win.png",
+     "w": 288,
+     "h": 470,
+     "ax": 142,
+     "ay": 468
+    },
+    "taunt": {
+     "f": "chars/huchenfeng_taunt.png",
+     "w": 215,
+     "h": 427,
+     "ax": 106,
+     "ay": 426
+    },
+    "channel": {
+     "f": "chars/huchenfeng_channel.png",
+     "w": 345,
+     "h": 427,
+     "ax": 203,
+     "ay": 424
+    },
+    "flykick": {
+     "f": "chars/huchenfeng_flykick.png",
+     "w": 431,
+     "h": 297,
+     "ax": 150,
+     "ay": 296
+    }
+   },
+   "portrait": "portraits/huchenfeng.png"
+  },
+  "mabaoguo": {
+   "poses": {
+    "idle": {
+     "f": "chars/mabaoguo_idle.png",
+     "w": 291,
+     "h": 429,
+     "ax": 114,
+     "ay": 427
+    },
+    "walk": {
+     "f": "chars/mabaoguo_walk.png",
+     "w": 317,
+     "h": 460,
+     "ax": 167,
+     "ay": 459
+    },
+    "jab": {
+     "f": "chars/mabaoguo_jab.png",
+     "w": 384,
+     "h": 397,
+     "ax": 152,
+     "ay": 395
+    },
+    "uppercut": {
+     "f": "chars/mabaoguo_uppercut.png",
+     "w": 301,
+     "h": 457,
+     "ax": 149,
+     "ay": 455
+    },
+    "guard": {
+     "f": "chars/mabaoguo_guard.png",
+     "w": 332,
+     "h": 401,
+     "ax": 164,
+     "ay": 399
+    },
+    "jump": {
+     "f": "chars/mabaoguo_jump.png",
+     "w": 242,
+     "h": 290,
+     "ax": 117,
+     "ay": 288
+    },
+    "hit": {
+     "f": "chars/mabaoguo_hit.png",
+     "w": 348,
+     "h": 375,
+     "ax": 253,
+     "ay": 373
+    },
+    "defeat": {
+     "f": "chars/mabaoguo_defeat.png",
+     "w": 263,
+     "h": 310,
+     "ax": 132,
+     "ay": 308
+    },
+    "cast": {
+     "f": "chars/mabaoguo_cast.png",
+     "w": 363,
+     "h": 402,
+     "ax": 150,
+     "ay": 401
+    },
+    "smash": {
+     "f": "chars/mabaoguo_smash.png",
+     "w": 305,
+     "h": 451,
+     "ax": 149,
+     "ay": 450
+    },
+    "dash": {
+     "f": "chars/mabaoguo_dash.png",
+     "w": 380,
+     "h": 323,
+     "ax": 41,
+     "ay": 320
+    },
+    "sweep": {
+     "f": "chars/mabaoguo_sweep.png",
+     "w": 407,
+     "h": 256,
+     "ax": 113,
+     "ay": 255
+    },
+    "win": {
+     "f": "chars/mabaoguo_win.png",
+     "w": 318,
+     "h": 478,
+     "ax": 161,
+     "ay": 477
+    },
+    "taunt": {
+     "f": "chars/mabaoguo_taunt.png",
+     "w": 287,
+     "h": 425,
+     "ax": 141,
+     "ay": 421
+    },
+    "channel": {
+     "f": "chars/mabaoguo_channel.png",
+     "w": 420,
+     "h": 420,
+     "ax": 245,
+     "ay": 417
+    },
+    "flykick": {
+     "f": "chars/mabaoguo_flykick.png",
+     "w": 429,
+     "h": 296,
+     "ax": 119,
+     "ay": 294
+    }
+   },
+   "portrait": "portraits/mabaoguo.png"
+  }
+ },
+ "props": {
+  "dumpling": {
+   "f": "props/dumpling.png",
+   "w": 220,
+   "h": 170
+  },
+  "rmb": {
+   "f": "props/rmb.png",
+   "w": 220,
+   "h": 197
+  },
+  "dollar": {
+   "f": "props/dollar.png",
+   "w": 220,
+   "h": 201
+  },
+  "book": {
+   "f": "props/book.png",
+   "w": 220,
+   "h": 203
+  },
+  "frisbee": {
+   "f": "props/frisbee.png",
+   "w": 220,
+   "h": 160
+  },
+  "thermos": {
+   "f": "props/thermos.png",
+   "w": 161,
+   "h": 220
+  },
+  "iphone": {
+   "f": "props/iphone.png",
+   "w": 159,
+   "h": 220
+  },
+  "android": {
+   "f": "props/android.png",
+   "w": 169,
+   "h": 220
+  },
+  "bolt": {
+   "f": "props/bolt.png",
+   "w": 118,
+   "h": 220
+  },
+  "kline": {
+   "f": "props/kline.png",
+   "w": 195,
+   "h": 220
+  },
+  "fan": {
+   "f": "props/fan.png",
+   "w": 220,
+   "h": 185
+  },
+  "selfiestick": {
+   "f": "props/selfiestick.png",
+   "w": 146,
+   "h": 220
+  },
+  "mic": {
+   "f": "props/mic.png",
+   "w": 164,
+   "h": 220
+  },
+  "trophy": {
+   "f": "props/trophy.png",
+   "w": 173,
+   "h": 220
+  },
+  "panda": {
+   "f": "props/panda.png",
+   "w": 220,
+   "h": 211
+  }
+ },
+ "stages": {
+  "studio": "stages/studio.jpg",
+  "lecture": "stages/lecture.jpg",
+  "street": "stages/street.jpg"
+ },
+ "logo": "logo.png",
+ "fx": {
+  "spark0": {
+   "f": "fx/spark0.png",
+   "w": 133,
+   "h": 137
+  },
+  "spark1": {
+   "f": "fx/spark1.png",
+   "w": 220,
+   "h": 193
+  },
+  "spark2": {
+   "f": "fx/spark2.png",
+   "w": 220,
+   "h": 204
+  },
+  "spark3": {
+   "f": "fx/spark3.png",
+   "w": 220,
+   "h": 196
+  },
+  "guardhex": {
+   "f": "fx/guardhex.png",
+   "w": 220,
+   "h": 212
+  },
+  "puff": {
+   "f": "fx/puff.png",
+   "w": 210,
+   "h": 220
+  },
+  "dustcurl": {
+   "f": "fx/dustcurl.png",
+   "w": 220,
+   "h": 154
+  },
+  "twinkle": {
+   "f": "fx/twinkle.png",
+   "w": 153,
+   "h": 220
+  },
+  "speedline": {
+   "f": "fx/speedline.png",
+   "w": 220,
+   "h": 105
+  },
+  "ring": {
+   "f": "fx/ring.png",
+   "w": 220,
+   "h": 196
+  },
+  "anger": {
+   "f": "fx/anger.png",
+   "w": 170,
+   "h": 178
+  },
+  "aura": {
+   "f": "fx/aura.png",
+   "w": 192,
+   "h": 220
+  }
+ },
+ "v": 1783405066
+}

@@ -1,252 +1,222 @@
-// Game data: settings, fighter blueprints, stages, difficulty profiles.
-// Ported from setting.py / heroes.py and tuned for the HTML5 build.
+// 梗图格斗 2.0 — data tables. All tuning lives here; engine code reads, never invents.
 "use strict";
 
 window.GAME_DATA = (() => {
   const settings = {
-    width: 1480,
-    height: 860,
-    floorY: 684,
-    gravity: 2180,
-    moveSpeed: 480,
-    guardSpeed: 190,
-    airSpeed: 406,
-    jumpSpeed: 872,
-    dashSpeed: 1080,
-    dashDuration: 0.14,
-    roundTime: 76,
-    roundsToWin: 2,
-    arcadeMatches: 3,
-    maxHealth: 220,
-    maxMeter: 100,
-    maxGuardHeat: 100,
-    guardCoolRate: 40,
-    lowHealthThreshold: 0.3,
-    introTime: 1.35,
-    roundFreezeTime: 1.5,
-    matchIntroTime: 2.2,
-    stageMargin: 72,
-    fighterW: 116,
-    fighterH: 176,
+    width: 1280, height: 720,
+    floorY: 640,
+    stageW: 1780,          // world width, camera scrolls
+    wallPad: 70,
+    gravity: 3200,
+    walkSpeed: 265, backSpeed: 205, airDrift: 200,
+    jumpVy: -1120, fastFallMul: 1.65,
+    dashSpeed: 720, dashFrames: 14, dashCd: 18,
+    backdashSpeed: 560, backdashFrames: 22, backdashIframes: 8, backdashCd: 60,
+    doubleTapWindow: 14,   // frames for double-tap dash
+    charH: 335,            // display height of idle pose
+    maxHealth: 200, maxMeter: 100, maxGuard: 100,
+    guardRegen: 34,        // per second, only while not blocking
+    chipRatio: 0.12, ultChipRatio: 0.24,
+    justGuardWindow: 8,    // frames
+    guardGaugeRatio: 0.85, // gauge damage = dmg * this
+    crumpleFrames: 70,
+    throwRange: 78, throwDmg: 20, throwStartup: 5, throwCd: 45,
+    roundTime: 60, roundsToWin: 2,
+    comboScaleStep: 0.10, comboScaleFloor: 0.30,
+    juggleLift: 0.86,      // each relaunch keeps this much lift
+    maxComboHits: 14,
+    meterOnHit: 0.55, meterOnBlockDealt: 0.25, meterOnTaken: 0.38,
+    projCap: 2,
+    ultFreeze: 52,         // cinematic freeze frames
+    introTime: 2.1, koSlowmo: 0.25, koSlowFrames: 90,
+    aiTickMs: 50,
   };
 
-  const C = {
-    red: [242, 116, 73],
-    gold: [250, 204, 90],
-    cyan: [88, 208, 230],
-    blue: [60, 113, 230],
-    pink: [255, 93, 161],
-    orange: [243, 166, 73],
-    purple: [189, 106, 255],
-    green: [116, 214, 146],
-    white: [246, 241, 233],
+  // Baseline frame data (60fps). Per-move overrides in kits.
+  const frames = {
+    light: { startup: 6, active: 3, recovery: 9, dmg: 5, chainWindow: 14 },
+    light3: { startup: 7, active: 4, recovery: 14, dmg: 7 },          // sweep ender
+    heavy: { startup: 14, active: 4, recovery: 24, dmg: 13 },          // universal launcher / anti-air
+    airLight: { startup: 7, active: 5, recovery: 10, dmg: 7 },
+    airHeavy: { startup: 12, active: 5, recovery: 14, dmg: 11 },
   };
 
-  const dirMap = (neutral, up, down, left, right) => ({ neutral, up, down, left, right });
-
-  const fighters = [
-    {
-      key: "chen_ping_macro",
-      outfit: { style: "suit", jacket: [196,124,62], shirt: [245,240,228], tie: null, pants: [70,56,48], shoes: [44,36,30] },
-      scan: "月入¥2000,生活质量 > $3000",
-      name: "陈平·购买力版",
-      title: "Macro Card Zoner",
-      accent: C.red, accent2: C.gold, coat: [79, 46, 36],
-      basics: dirMap("陈平不等式", "眉山抛物线", "汇率压底", "美元回旋", "购买力直拳"),
-      skills: dirMap("小院别墅雨", "宏观上冲", "黑板封线", "外逃缓冲", "大棋推进"),
-      ult: "购买力总攻",
-      taunt: "美国人民生活在水深火热之中!",
-      victory: "陈平不等式,成立!",
-      blurb: "用购买力话术远程压制。子弹多,耐心少。",
-      range: 500, stageTheme: 1, aiStyle: "zone",
-    },
-    {
-      key: "chen_ping_lecture",
-      outfit: { style: "suit", jacket: [228,222,206], shirt: [250,248,240], tie: [184,142,84], pants: [205,200,186], shoes: [78,66,54] },
-      scan: "学历:研究经济问题的物理学家",
-      name: "陈平·讲堂版",
-      title: "Lecture Hall Control",
-      accent: C.orange, accent2: [244, 228, 176], coat: [76, 64, 39],
-      basics: dirMap("黑板公式", "讲台粉笔", "GDP地平线", "讲义翻页", "课堂点名"),
-      skills: dirMap("眉山论剑", "函数升空", "数据砸盘", "课堂护盾", "台前冲锋"),
-      ult: "折线图瀑布",
-      taunt: "这个问题我三十年前就讲过了。",
-      victory: "眉山论剑,胜负已分。",
-      blurb: "地面控制 + 光束墙,节奏慢但读对就重击。",
-      range: 400, stageTheme: 1, aiStyle: "control",
-    },
-    {
-      key: "zhang_weiwei_civil",
-      outfit: { style: "suit", jacket: [30,48,78], shirt: [248,248,246], tie: [88,208,230], pants: [26,40,64], shoes: [30,30,36] },
-      scan: "履历:走过一百多个国家",
-      name: "张维为·文明版",
-      title: "Civilizational Caster",
-      accent: C.cyan, accent2: C.blue, coat: [25, 46, 72],
-      basics: dirMap("文明型国家", "话语升空", "叙事压制", "比较镜像", "模式前推"),
-      skills: dirMap("这就是中国", "国运天幕", "东方落点", "话语权护盾", "文明冲波"),
-      ult: "东方升西方降",
-      taunt: "我走过一百多个国家。",
-      victory: "我觉得这就是一种自信。",
-      reflectLine: "这就是一种自信",
-      blurb: "话语波控场,中距离之王,稳到无聊就是最强。",
-      range: 360, stageTheme: 0, aiStyle: "caster",
-    },
-    {
-      key: "zhang_weiwei_studio",
-      outfit: { style: "suit", jacket: [42,64,112], shirt: [248,248,246], tie: [167,226,255], pants: [36,54,94], shoes: [28,30,40] },
-      scan: "手机:国产 信号:满格自信",
-      name: "张维为·演播室版",
-      title: "Studio Tempo Controller",
-      accent: [64, 154, 240], accent2: [167, 226, 255], coat: [32, 42, 86],
-      basics: dirMap("比较优势", "演播灯塔", "圆桌卡点", "退一步再评", "连麦点题"),
-      skills: dirMap("演播室聚光灯", "全场提问", "圆桌封路", "场外连线", "主持推进"),
-      ult: "全场连麦",
-      taunt: "中国人,你要自信!",
-      victory: "可圈可点。",
-      reflectLine: "这就是一种自信",
-      blurb: "麦克风回旋镖 + 聚光灯,把每条路都变得别扭。",
-      range: 430, stageTheme: 0, aiStyle: "studio",
-    },
-    {
-      key: "lao_a_execute",
-      outfit: { style: "polo", jacket: [215,68,51], shirt: [240,230,214], tie: null, pants: [92,102,122], shoes: [52,54,62] },
-      scan: "报名表:FLEA 成人组",
-      name: "牢A·海报版",
-      title: "Poster Irony Trickster",
-      accent: C.pink, accent2: [255, 220, 241], coat: [56, 24, 46],
-      basics: dirMap("外协海报", "创业咖啡", "留学主题", "福华大厦", "成人组直冲"),
-      skills: dirMap("FLEA报名表", "角落麦序", "海报糊脸", "文案回车", "留学生夜袭"),
-      ult: "海报真身",
-      taunt: "成人组在创业咖啡。",
-      victory: "海报比对手更有主动权。",
-      blurb: "活动海报变成弹幕,赢法是把擂台变成公告栏。",
-      range: 350, stageTheme: 5, aiStyle: "trickster",
-    },
-    {
-      key: "lao_a_budget",
-      outfit: { style: "hoodie", jacket: [62,36,76], shirt: [40,22,50], tie: null, pants: [44,28,56], shoes: [28,20,38] },
-      scan: "净资产:低于斩杀线",
-      name: "牢A·斩杀线版",
-      title: "Execution-Line Rushdown",
-      accent: C.purple, accent2: C.gold, coat: [57, 33, 69],
-      basics: dirMap("斩杀线", "飞袋上挑", "月末封底", "账单回旋", "处刑飞扑"),
-      skills: dirMap("牢A降临", "Paycheck坠落", "生存压力", "处刑预告", "红温追击"),
-      ult: "一线清屏",
-      taunt: "你已经踩进斩杀线了。",
-      victory: "月末了,账单来了。欢迎回家。",
-      blurb: "贴脸压制,斩杀线既是机制也是情绪。",
-      range: 260, stageTheme: 5, aiStyle: "rush",
-    },
-    {
-      key: "fengge_dongbei",
-      outfit: { style: "tee", jacket: [92,94,102], shirt: [64,66,74], tie: null, pants: [54,56,64], shoes: [206,206,210] },
-      scan: "学历:建议凑个大专",
-      name: "峰哥·东百版",
-      title: "Rant Brawler",
-      accent: [194, 116, 84], accent2: [245, 206, 120], coat: [85, 52, 34],
-      basics: dirMap("东百锐评", "指点江山", "凑大专", "性压抑回身", "下沉重拳"),
-      skills: dirMap("东百连喷", "高处俯冲", "地面锐评", "老铁回旋", "江山直推"),
-      ult: "直播间开闸",
-      taunt: "兄弟,你这是性压抑了。",
-      victory: "恒河水,非常好喝!",
-      blurb: "锐评型近战,角度刁钻,赢得越离谱越好笑。",
-      range: 300, stageTheme: 4, aiStyle: "brawler",
-    },
-    {
-      key: "hu_chenfeng_reviewer",
-      outfit: { style: "sweater", jacket: [46,50,94], shirt: [238,234,222], tie: null, pants: [74,84,124], shoes: [238,238,238] },
-      scan: "手机:iPhone顶配 自评:爆赞",
-      name: "户晨风·评测版",
-      title: "Tech Review Skirmisher",
-      accent: C.green, accent2: [170, 242, 197], coat: [34, 74, 58],
-      basics: dirMap("苹果安卓相对论", "配置升空", "税单落地", "反向横评", "物流直送"),
-      skills: dirMap("评测结论", "新机开箱", "价格腰斩", "返场复盘", "拍摄推进"),
-      ult: "全平台对轰",
-      taunt: "用什么手机?说。",
-      victory: "祝你越来越苹果。",
-      blurb: "评测节奏变成立回,对面一上头就是机会。",
-      range: 390, stageTheme: 2, aiStyle: "reviewer",
-    },
-    {
-      key: "hu_xijin_editor",
-      outfit: { style: "suit", jacket: [74,62,60], shirt: [248,246,240], tie: [202,62,50], pants: [62,54,52], shoes: [38,32,30] },
-      scan: "持仓:A股 浮亏:复杂",
-      name: "胡锡进·社评版",
-      title: "Editorial Pressure",
-      accent: [224, 94, 76], accent2: [246, 214, 156], coat: [76, 36, 38],
-      basics: dirMap("老胡锐评", "连夜发文", "社评压底", "回旋余地", "指点江山"),
-      skills: dirMap("环球社论", "热搜起飞", "A股日记", "口风微调", "话题推进"),
-      ult: "老胡不装了",
-      taunt: "事情是复杂的。",
-      victory: "2800点以下,遍地是黄金!",
-      reflectLine: "叼盘成功",
-      blurb: "稳健施压,退路多,削血像热搜一样赖着不走。",
-      range: 420, stageTheme: 3, aiStyle: "editor",
-    },
+  const RANKS = [
+    [12, "遥遥领先!!"], [8, "赢麻了!"], [5, "整活成功"], [3, "有点东西"],
   ];
+  const KO_TAGS = ["麻了", "典!", "绷不住了", "拿捏了", "寄!"];
 
-  const stages = [
-    {
-      name: "这就是中国演播室",
-      subtitle: "Studio lights, debate heat, and a live audience.",
-      top: [10, 18, 36], bottom: [47, 20, 30], floor: [20, 23, 44],
-      keywords: ["话语权", "文明型国家", "这就是中国", "东方升西方降"],
-      prop: "studio",
+  const fighters = {
+    chen: {
+      name: "陈平", epithet: "购买力宗师", archetype: "远程压制 · Zoner",
+      accent: "#f0813c", accent2: "#ffd27a",
+      stage: "lecture",
+      hp: 195,
+      kit: {
+        s1: { id: "dumpling", label: "水饺导弹", cd: 100,
+              proj: { dmg: 9, vx: 520, vy: -430, g: 1450, r: 26, sprite: "dumpling", spin: 9, tier: 1 } },
+        s2: { id: "texas_hop", label: "转进德州", cd: 300, castLine: "人在美国,刚下飞机!" },
+        ult: { id: "inequality_beam", label: "陈平不等式", dmg: 52,
+               line: "在中国花2000块,比在美国花3000美元过得舒服得多!" },
+      },
+      quotes: {
+        intro: ["美国人民生活在水深火热之中!", "这个问题,我三十年前就讲过了。"],
+        win: ["陈平不等式,成立!", "在中国花2000块钱,比在美国花3000美元过得舒服得多!"],
+        lose: ["德州的冬天,是有点冷。"],
+        hurt: ["哎呀!", "这不符合宏观规律!"],
+        taunt: ["你们要学一点经济学。"],
+      },
+      ai: { style: "zoner", prefRange: 520, aggression: 0.42, projFreq: 0.85 },
     },
-    {
-      name: "眉山讲堂",
-      subtitle: "Blackboard formulas and purchasing-power confidence.",
-      top: [18, 25, 34], bottom: [43, 23, 20], floor: [24, 29, 45],
-      keywords: ["陈平不等式", "购买力", "讲堂", "宏观判断"],
-      prop: "blackboard",
+
+    zhang: {
+      name: "张维为", epithet: "自信护法", archetype: "立回反制 · Caster",
+      accent: "#3f8ce8", accent2: "#a9d7ff",
+      stage: "studio",
+      hp: 205,
+      kit: {
+        s1: { id: "shockwave", label: "西方震撼波", cd: 160,
+              proj: { dmg: 11, vx: 390, vy: 0, g: 0, r: 34, sprite: "wave", spin: 0, tier: 1 } },
+        s2: { id: "confidence", label: "这就是一种自信", cd: 420,
+              startup: 4, active: 20, recovery: 24, reflectLine: "这就是一种自信!" },
+        ult: { id: "danmaku_rain", label: "中国人,你要自信", dmg: 50, line: "中国人,你要自信!" },
+      },
+      quotes: {
+        intro: ["我走访过一百多个国家。", "一出国,就爱国。"],
+        win: ["西方,又一次被震撼了。", "我觉得这就是一种自信。"],
+        lose: ["这个问题,我们要辩证地看。"],
+        hurt: ["西方陷入了沉思……", "不够自信!"],
+        taunt: ["你要自信一点。"],
+      },
+      ai: { style: "caster", prefRange: 380, aggression: 0.5, projFreq: 0.6, reflectProb: 0.4 },
     },
-    {
-      name: "评测区擂台",
-      subtitle: "Phones, tax slips, and delivery-speed hot takes.",
-      top: [13, 20, 31], bottom: [23, 17, 39], floor: [18, 23, 41],
-      keywords: ["安卓", "苹果", "税单", "横评"],
-      prop: "phones",
+
+    huxijin: {
+      name: "胡锡进", epithet: "叼盘老编", archetype: "中距压制 · Pressure",
+      accent: "#e05e4c", accent2: "#f6d69c",
+      stage: "studio",
+      hp: 205,
+      kit: {
+        s1: { id: "frisbee", label: "社评飞盘", cd: 150,
+              proj: { dmg: 11, vx: 560, vy: 0, g: 0, r: 30, sprite: "frisbee", spin: 14, tier: 1,
+                      boomerang: 460, returnDmgMul: 0.5 } },
+        s2: { id: "complexity", label: "复杂化", cd: 380, castLine: "但同时,我们也要看到……",
+              slowMul: 0.6, slowSecs: 2.0 },
+        ult: { id: "kline_rain", label: "3000点保卫战", dmg: 50, line: "3000点保卫战,打响了!" },
+      },
+      quotes: {
+        intro: ["事情是复杂的。"],
+        win: ["老胡还是那句话:要冷静。"],
+        lose: ["老胡今天又亏了,但我不割肉。"],
+        hurt: ["这很复杂!", "老胡要发个微博。"],
+        taunt: ["我劝这位同志冷静。"],
+      },
+      ai: { style: "pressure", prefRange: 420, aggression: 0.55, projFreq: 0.7 },
     },
-    {
-      name: "热搜评论场",
-      subtitle: "The old-guard opinion machine never sleeps.",
-      top: [18, 18, 30], bottom: [34, 18, 23], floor: [20, 21, 37],
-      keywords: ["社评", "热搜", "A股", "老胡锐评"],
-      prop: "ticker",
+
+    fengge: {
+      name: "峰哥", epithet: "东百浪人", archetype: "贴脸猛攻 · Rushdown",
+      accent: "#c27454", accent2: "#f5ce78",
+      stage: "street",
+      hp: 210,
+      kit: {
+        s1: { id: "rant_cone", label: "东百锐评", cd: 130, hits: 3, dmg: 4, range: 210 },
+        s2: { id: "outlaw_dash", label: "亡命天涯", cd: 260 },
+        ult: { id: "ranbu", label: "压抑爆发", dmg: 54, line: "太压抑了!都压抑!" },
+      },
+      quotes: {
+        intro: ["哥们,做个采访呗——一个月挣多少钱?"],
+        win: ["这就是东百往事。"],
+        lose: ["兄弟们,咱们下期再见。"],
+        hurt: ["多少是有点压抑了。"],
+        taunt: ["兄弟,你压抑吗?"],
+      },
+      ai: { style: "rushdown", prefRange: 150, aggression: 0.8, projFreq: 0.25 },
     },
-    {
-      name: "东百锐评间",
-      subtitle: "Downward-looking glare, upward-reaching confidence.",
-      top: [16, 16, 26], bottom: [43, 21, 20], floor: [22, 20, 34],
-      keywords: ["指定没有你好果汁吃", "你太baby辣", "凑大专", "指点江山"],
-      prop: "street",
+
+    huchenfeng: {
+      name: "户晨风", epithet: "评测判官", archetype: "游走骚扰 · Skirmisher",
+      accent: "#58c98a", accent2: "#c4f2d6",
+      stage: "street",
+      hp: 195,
+      kit: {
+        s1: { id: "phone_review", label: "手机测评", cd: 90, recovery: 30,
+              iphone: { dmg: 10, vx: 700, vy: 0, g: 0, r: 24, sprite: "iphone", spin: 6, tier: 1, tag: "高端!" },
+              android: { dmg: 7, vx: 430, vy: -350, g: 1300, r: 24, sprite: "android", spin: 6, tier: 1, tag: "唉,安卓。" } },
+        s2: { id: "reincarnate", label: "账号转世", cd: 330, cardLine: "该账号已被封禁",
+              doneLine: "转世成功!" },
+        ult: { id: "judgement_pillar", label: "人上人认证", dmg: 50, line: "恭喜你,人上人了。" },
+      },
+      quotes: {
+        intro: ["你好朋友,用的什么手机?"],
+        win: ["祝你早日用上苹果。"],
+        lose: ["安卓。……唉。"],
+        hurt: ["这个价位,不该挨这一下。"],
+        taunt: ["说,用的什么手机?"],
+      },
+      ai: { style: "skirmisher", prefRange: 460, aggression: 0.5, projFreq: 0.75 },
     },
-    {
-      name: "牢A 处刑台",
-      subtitle: "The line glows brighter when the monthly pressure hits.",
-      top: [18, 12, 24], bottom: [50, 18, 33], floor: [25, 18, 34],
-      keywords: ["斩杀线", "账单", "Paycheck", "处刑"],
-      prop: "gallows",
+
+    mabaoguo: {
+      name: "马保国", epithet: "浑元掌门", archetype: "接化发宗师 · Grappler",
+      accent: "#c9a54a", accent2: "#ffe9a8",
+      stage: "street",
+      hp: 220,
+      kit: {
+        s1: { id: "lightning_whip", label: "闪电鞭", cd: 120,
+              proj: { dmg: 10, vx: 640, vy: 0, g: 0, r: 28, sprite: "bolt", spin: 0, tier: 1, maxDist: 330 } },
+        s2: { id: "sneak_attack", label: "偷袭", cd: 330, cueLine: "来骗!来偷袭!" },
+        ult: { id: "five_whips", label: "闪电五连鞭", dmg: 56, line: "看我,闪电五连鞭!" },
+        counter: { id: "jiehuafa", label: "接化发", cd: 240, dmg: 18,
+                   lines: ["接!化!发!", "传统功夫,点到为止。"] },
+      },
+      quotes: {
+        intro: ["我是浑元形意太极门掌门人,马保国。"],
+        win: ["耗子尾汁。"],
+        lose: ["年轻人不讲武德。"],
+        hurt: ["大意了啊,没有闪!"],
+        taunt: ["我劝你耗子尾汁。"],
+      },
+      ai: { style: "grappler", prefRange: 190, aggression: 0.65, projFreq: 0.35,
+            counterProb: 0.35 },
     },
-  ];
+  };
+
+  const ROSTER = ["chen", "zhang", "huxijin", "fengge", "huchenfeng", "mabaoguo"];
+
+  const stages = {
+    lecture: { name: "眉山讲堂", img: "stages/lecture.png",
+               chalk: "¥2000 > $3000", chalk2: "陈平不等式" },
+    studio:  { name: "《这就是中国》演播室", img: "stages/studio.png",
+               screenText: "这就是中国" },
+    street:  { name: "东百夜市", img: "stages/street.png",
+               neon: ["东百往事", "烧烤", "大保剑"] },
+  };
+
+  // Arcade: 3 ladder matches + gold Ma Baoguo boss.
+  const arcade = {
+    matches: 3,
+    boss: { char: "mabaoguo", gold: true, hpMul: 1.12,
+            name: "金色传说·马保国",
+            introLine: "年轻人,不讲武德。",
+            perfectTag: "训练有素,有备而来" },
+  };
 
   const difficulties = [
-    { name: "Casual", reaction: 0.34, aggression: 0.46, combo: 0.25, guard: 0.40, antiAir: 0.30 },
-    { name: "Panelist", reaction: 0.24, aggression: 0.58, combo: 0.42, guard: 0.55, antiAir: 0.45 },
-    { name: "War Room", reaction: 0.16, aggression: 0.72, combo: 0.62, guard: 0.72, antiAir: 0.64 },
+    { name: "观众", reaction: 0.40, aggression: 0.40, mistake: 0.35, antiAirMs: 450, blockProb: 0.35, reflectMul: 0.4 },
+    { name: "评论员", reaction: 0.26, aggression: 0.60, mistake: 0.18, antiAirMs: 350, blockProb: 0.55, reflectMul: 0.7 },
+    { name: "键盘侠", reaction: 0.16, aggression: 0.78, mistake: 0.08, antiAirMs: 250, blockProb: 0.72, reflectMul: 1.0 },
   ];
 
-  const ticker = [
-    "方向键组合改变招式本体:W/A/S/D + J 或 K。",
-    "本作为梗图恶搞:公众人物语录被做成了动画格斗套装。",
-    "低血量回合会触发牢A斩杀线,部分角色能提前逼出来。",
-    "AI 依赖延迟反应而不是读指令,难度会沿街机阶梯爬升。",
-    "据传本场解说走过一百多个国家。",
-    "场边记分牌:¥2000 > $3000,不接受反驳。",
-    "斩杀线以下,一切都会加速。",
-    "赛后采访只问一个问题:用什么手机?",
-    "老胡观战表示:事情是复杂的,一方面……另一方面……",
-  ];
+  const banners = {
+    round: n => `第 ${["一", "二", "三", "四", "五"][n - 1] || n} 回合`,
+    fight: "开吵!",
+    ko: "K.O.",
+    timeout: "时间到",
+    perfect: "无伤!整挺好!",
+    draw: "双双蚌埠住了",
+    win: "胜",
+  };
 
-  return { settings, fighters, stages, difficulties, ticker, C };
+  return { settings, frames, fighters, ROSTER, stages, arcade, difficulties, RANKS, KO_TAGS, banners };
 })();

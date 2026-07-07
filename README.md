@@ -1,86 +1,73 @@
-# ChengPing VS ZhangWeiwei · 梗图格斗
+# 梗图格斗:陈平 VS 张维为 · MEME FIGHT ARCADE
 
-An ironic anime-style **meme arena fighter** built from Chinese internet commentator memes — now playable **directly in the browser** (HTML5 canvas, no install).
+A **KOF-style meme arena fighter** starring China's most meme-worthy internet commentators —
+fully rebuilt from scratch: **all character art, portraits and stages are AI-generated**,
+the engine is a dependency-free HTML5 canvas fighting game.
 
-> 本作为梗图恶搞 (parody)。Public personas, recurring arguments, and meme culture turned into fighting-game kits.
+> 本作为梗图恶搞 (parody)。Public personas and meme culture turned into an arcade fighter.
+> 全部立绘由 AI 生成。
 
-## ▶ Play in the browser
+## ▶ Play
 
-**Live build:** <http://weikezhang.cn/ChengPing-VS-ZhangWeiWei/>
-
-Or run locally — open `index.html` over any static server:
+Open `index.html` over any static server:
 
 ```bash
-python -m http.server 8000
-# then visit http://localhost:8000
+python3 -m http.server 8000
+# visit http://localhost:8000
 ```
 
-## Roster (9 meme forms)
+## Roster (6 fighters, distinct archetypes)
 
-| Fighter | Style | Signature meme |
+| Fighter | Archetype | Signature kit |
 | --- | --- | --- |
-| 陈平·购买力版 | Macro Card Zoner | 陈平不等式:¥2000 > $3000 |
-| 陈平·讲堂版 | Lecture Hall Control | 眉山论剑 + 黑板公式 |
-| 张维为·文明版 | Civilizational Caster | 「我觉得这就是一种自信」反弹 |
-| 张维为·演播室版 | Studio Tempo Controller | 麦克风回旋镖 + 聚光灯 |
-| 牢A·海报版 | Poster Irony Trickster | FLEA 报名表弹幕 |
-| 牢A·斩杀线版 | Execution-Line Rushdown | 斩杀线既是机制也是情绪 |
-| 峰哥·东百版 | Rant Brawler | 东百锐评 + 性压抑诊断 |
-| 户晨风·评测版 | Tech Review Skirmisher | 「用什么手机?」快扫档案 |
-| 胡锡进·社评版 | Editorial Pressure | 叼盘反射 + A股日记 |
+| 陈平·购买力宗师 | 远程压制 Zoner | 水饺导弹 · 转进德州(「人在美国,刚下飞机!」) · 必杀「陈平不等式」¥2000>$3000 光束 |
+| 张维为·自信护法 | 立回反制 Caster | 西方震撼波 · 「这就是一种自信」反弹结界 · 必杀「中国人,你要自信」弹幕天降 |
+| 胡锡进·叼盘老编 | 中距压制 Pressure | 社评飞盘(回程「叼盘成功!」) · 「复杂化」减速场 · 必杀「3000点保卫战」绿色K线雨 |
+| 峰哥·东百浪人 | 贴脸猛攻 Rushdown | 东百锐评音波 · 亡命天涯穿身 · 必杀「压抑爆发」乱舞 |
+| 户晨风·评测判官 | 游走骚扰 Skirmisher | 手机测评(苹果快弹/安卓抛物) · 账号转世(封禁牌遁) · 必杀「人上人认证」 |
+| 马保国·浑元掌门 | 接化发宗师 Grappler | 闪电鞭 · 偷袭(「来骗!来偷袭!」) · 极限招架自动「接!化!发!」 · 必杀「闪电五连鞭」 |
+
+**Arcade final boss:** 金色传说·马保国 — 血量加成 + 半血触发一次金身霸体(「年轻人,不讲武德。」)。
+无伤通关 BOSS 战解锁台词「训练有素,有备而来」。
 
 ## Controls
 
-**P1:** `A/D` move · `W` jump / double jump · `S` fast fall · `Space` guard · `L` dash ·
-`J`+direction = 5 normals · `K`+direction = 5 skills · `U` ultimate
+**P1:** `A/D` 移动(后方向=防御) · `W` 跳 · `S` 快落 · 双击方向 冲刺/后撤(后撤带无敌帧) ·
+`J` 普攻(可三连) · `K` 重击(升龙/近身投技) · `U` 技能1 · `I` 技能2 · `O` 必杀(气满) · `T` 嘲讽
 
-**P2 (versus mode, press `V` in menu):** arrow keys move · `,` normals · `.` skills ·
-`/` ultimate · `'` dash · Right `Shift` guard
+**P2 (双人对战,主菜单按 `V`):** 方向键移动 · `,` 普攻 · `.` 重击 · `;` 技能1 · `'` 技能2 · `/` 必杀 · 右`Shift` 嘲讽
 
-`P`/`Esc` pause (Esc again quits) · `J` in pause = move list · `[` `]` volume · `M` mute · `1/2/3` AI difficulty · `Enter` confirm
+`P`/`Esc` 暂停(再按 `Esc` 回主菜单) · 暂停中 `J` 出招表 · `[` `]` 音量 · `M` 静音 · 主菜单 `1/2/3` AI难度
 
-Dash while holding **away** = backdash with invincibility frames. Tap `W` = short hop, hold = full jump. Block at the last instant for a **just-guard** (no chip damage, bonus meter).
+## Fight systems
 
-## Modes
-
-- **街机 Arcade** — 3-match ladder vs AI, final boss 牢A·斩杀线版
-- **双人对战 Versus** — local 2-player, best of 3 rounds, mirror matches allowed
-
-## Game systems
-
-- 3-match arcade ladder with rising AI difficulty (final boss: 牢A·斩杀线版)
-- **牢A 斩杀线**: when anyone drops below 30% HP, an execution line sweeps the stage — the threshold is marked on every health bar
-- **Arcade scoring**: hits, combos, close-range bonuses, round/time/PERFECT bonuses, difficulty multiplier → S/A/B/C grade and a persistent HI-SCORE
-- **Movement tech**: short hop (tap W) vs full hop (hold), variable jump height, run acceleration with turn-skid, forward dash + **backdash with i-frames** (dash while holding away)
-- **Defense tech**: planted guard (25% chip), guard heat + guard break, **just-guard** (block within 0.15s = no chip + meter), per-character reflects (这就是一种自信 / 叼盘成功)
-- **Anti-spam design**: true-combo damage/juggle scaling, projectile-vs-projectile clash, 8-projectile cap, close-range damage +25%, long-range zoning builds half meter
-- Pushboxes (dash through for cross-ups), hit-stop, trauma screen shake, dynamic camera, KO slow-motion with punch-in
-- Title screen, pause menu (move list, volume), settings + high score persist in localStorage
-- All SFX and BGM synthesized live via WebAudio — zero audio files
+- 三局两胜 · 60 秒计时 · 时间到比血量
+- 普攻三连(第三段扫堂) · 重击=通用升龙(对空/浮空起手) · 近身对防御目标重击=投技
+- 防御:后方向格挡(削血 12%,防御槽会被打爆 → 破防硬直);**极限招架**(8帧内格挡)无削血,
+  马保国的极限招架自动触发「接化发」摔投反击
+- 气槽:命中/挨打积攒(挥空不给气) · 必杀开场定格演出,全程霸体、可防(削血加倍但打不死)
+- 连击伤害递减(下限30%) · 浮空追击 · 14连自动脱出防无限
+- 弹幕互相抵消(同级对碰),必杀级弹幕穿透一切;每人同屏至多2发
+- 传送类技能(偷袭/账号转世)带预警音/台词 + 固定落点 + 硬直,可被读
+- AI:3档难度 × 6种性格(zoner/caster/pressure/rushdown/skirmisher/grappler),延迟反应,不读指令
 
 ## Tech
 
-- `index.html` + `js/` — self-contained HTML5 canvas game, fixed 60 Hz timestep
-- `assets/web/` — transparent chibi head sprites, generated by `web_asset_pipeline.py`
-  (photo-based fighters get toon-shaded oval cutouts; the two 牢A forms are original vector cartoons since no usable photo source exists)
-- Image sources are documented in [assets/CREDITS.md](assets/CREDITS.md)
+- `index.html` + `js/` — self-contained canvas engine: fixed 60 Hz timestep, hitstop,
+  trauma screenshake, particle system, dynamic camera, WebAudio synth SFX + BGM (zero audio files)
+- `assets/game/` — baked PNG sprites + `manifest.json` (the engine only loads these)
+- `assets/aiwork/` — raw AI-generated sheets (pose sheets, portraits, stages)
+- `pipeline/gen_ai.py` — drives the **Codex CLI image generator**: per-character 2×4 pose sheets
+  (idle/walk/jab/uppercut/guard/jump/hit/defeat + cast/smash/dash/sweep/win/taunt/channel/flykick),
+  select-screen portraits, stages, props
+- `pipeline/gen_pollinations.py` — free-API fallback generator (stages/props) for when the Codex quota is exhausted
+- `pipeline/build_assets.py` — chroma-keys the green screens, slices sheets via connected components,
+  computes feet anchors, packs `assets/game/` + manifest
 
-```bash
-python web_asset_pipeline.py   # rebuild the web sprites from assets/raw
-```
-
-## Legacy Pygame build
-
-The original desktop build still works:
-
-```bash
-python -m pip install -r requirements.txt
-python blank.py                       # play
-python blank.py --headless-smoke-test --frames 1800
-python blank.py --autoplay-playtest --frames 1800 --difficulty 3
-```
+Regenerate art: `python3 pipeline/gen_ai.py list|run <job…>`, then `python3 pipeline/build_assets.py`.
 
 ## Notes
 
 - Parody project based on public personas and meme culture; affectionate mockery only.
-- The browser build only needs `index.html`, `js/`, and `assets/web/`.
+- Image sources for the AI reference photos are documented in [assets/CREDITS.md](assets/CREDITS.md).
+- The legacy pygame build was removed in the 3.0 rewrite (see git history if you miss it).

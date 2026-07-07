@@ -1,2909 +1,2377 @@
-// ChengPing VS ZhangWeiwei — HTML5 arena fighter.
-// Engine: fixed 60Hz timestep, dynamic camera, hit-stop, trauma shake,
-// particle pool, WebAudio SFX. Gameplay ported from the Pygame build.
+// 梗图格斗 2.0 — KOF-style meme arena fighter.
+// Fixed 60Hz timestep · AI-generated sprite sheets · data-driven combat.
 "use strict";
 
 (() => {
-  const D = window.GAME_DATA;
-  const S = D.settings;
-  const AU = window.GameAudio;
+  const D = window.GAME_DATA, S = D.settings, AU = window.GAME_AUDIO;
   const W = S.width, H = S.height, FLOOR = S.floorY;
+  const FONT = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
   const TAU = Math.PI * 2;
-  const FONT = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif';
 
-  // ---------- small helpers ----------
+  // ---------- helpers ----------
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const lerp = (a, b, t) => a + (b - a) * t;
-  const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
-  const font = (px, bold) => `${bold ? "bold " : ""}${px}px ${FONT}`;
   const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = arr => arr[(Math.random() * arr.length) | 0];
+  const font = (px, bold = true) => `${bold ? "900 " : ""}${px}px ${FONT}`;
 
-  function roundRect(ctx, x, y, w, h, r) {
+  function roundRect(c, x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+  const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+  // ---------- assets ----------
+  const ASSETS = { manifest: null, img: {} };
+  function loadImage(src) {
+    return new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im);
+      im.onerror = () => rej(new Error("missing " + src));
+      const v = ASSETS.manifest && ASSETS.manifest.v ? "?v=" + ASSETS.manifest.v : "";
+      im.src = "assets/game/" + src + v;
+    });
+  }
+  async function loadAssets(onProgress) {
+    const mf = await (await fetch("assets/game/manifest.json", { cache: "no-store" })).json();
+    ASSETS.manifest = mf;
+    const files = new Set();
+    for (const ck of Object.keys(mf.chars)) {
+      for (const p of Object.values(mf.chars[ck].poses)) files.add(p.f);
+      if (mf.chars[ck].portrait) files.add(mf.chars[ck].portrait);
+    }
+    for (const st of Object.values(mf.stages || {})) files.add(st);
+    for (const pr of Object.values(mf.props || {})) files.add(pr.f);
+    for (const fx of Object.values(mf.fx || {})) files.add(fx.f);
+    if (mf.logo) files.add(mf.logo);
+    const list = [...files];
+    let done = 0;
+    await Promise.all(list.map(f => loadImage(f).then(im => {
+      ASSETS.img[f] = im;
+      onProgress(++done / list.length);
+    })));
+  }
+  const poseData = (ck, pose) => {
+    const c = ASSETS.manifest.chars[ck];
+    return c.poses[pose] || c.poses.idle;
+  };
+  const propImg = key => {
+    const p = (ASSETS.manifest.props || {})[key];
+    return p ? { img: ASSETS.img[p.f], p } : null;
+  };
+  const fxImg = key => {
+    const p = (ASSETS.manifest.fx || {})[key];
+    return p ? { img: ASSETS.img[p.f], p } : null;
+  };
+
+  // ---------- input ----------
+  const KEYMAPS = [
+    { left: "KeyA", right: "KeyD", up: "KeyW", down: "KeyS",
+      light: "KeyJ", heavy: "KeyK", s1: "KeyU", s2: "KeyI", ult: "KeyO", taunt: "KeyT" },
+    { left: "ArrowLeft", right: "ArrowRight", up: "ArrowUp", down: "ArrowDown",
+      light: "Comma", heavy: "Period", s1: "Semicolon", s2: "Quote", ult: "Slash", taunt: "ShiftRight" },
+  ];
+  const keys = {};
+  const pressBuf = [];       // {code, t}
+  let frameNow = 0;
+  window.addEventListener("keydown", e => {
+    if (e.repeat) return;
+    keys[e.code] = true;
+    pressBuf.push({ code: e.code, t: frameNow, used: false, usedDT: false });
+    if (pressBuf.length > 40) pressBuf.shift();
+    AU.unlock();
+    Game.onKey(e.code, e);
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Slash", "Quote"].includes(e.code)) e.preventDefault();
+  });
+  window.addEventListener("keyup", e => { keys[e.code] = false; });
+  window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; pressBuf.length = 0; });
+
+  class Pad {
+    constructor(map) { this.map = map; }
+    down(name) { return !!keys[this.map[name]]; }
+    // buffered edge-trigger: consume presses from the last 3 frames
+    press(name) {
+      const code = this.map[name];
+      for (let i = pressBuf.length - 1; i >= 0; i--) {
+        const p = pressBuf[i];
+        if (p.code === code && !p.used && frameNow - p.t <= 3) { p.used = true; return true; }
+      }
+      return false;
+    }
+    doubleTap(name) {
+      const code = this.map[name];
+      const taps = pressBuf.filter(p => p.code === code && frameNow - p.t <= S.doubleTapWindow);
+      const fresh = taps.find(p => !p.usedDT && frameNow - p.t <= 3);
+      if (fresh && taps.length >= 2) { fresh.usedDT = true; return true; }
+      return false;
+    }
   }
 
-  function strokedText(ctx, text, x, y, fontStr, fill, strokeW = 4, stroke = "rgba(10,12,22,0.9)") {
-    ctx.font = fontStr;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    if (strokeW > 0) {
-      ctx.lineWidth = strokeW;
-      ctx.lineJoin = "round";
-      ctx.strokeStyle = stroke;
-      ctx.strokeText(text, x, y);
-    }
-    ctx.fillStyle = fill;
-    ctx.fillText(text, x, y);
+  // Virtual pad for AI — same interface.
+  class AIPad {
+    constructor() { this.state = {}; this.pulse = {}; }
+    down(name) { return !!this.state[name]; }
+    press(name) { const v = this.pulse[name]; this.pulse[name] = false; return !!v; }
+    doubleTap(name) { const v = this.pulse["dt_" + name]; this.pulse["dt_" + name] = false; return !!v; }
+    tap(name) { this.pulse[name] = true; }
+    dtap(name) { this.pulse["dt_" + name] = true; }
   }
 
   // ---------- particles ----------
-  const MAX_PARTICLES = 320;
   const particles = [];
-  function spawnParticle(p) {
-    if (particles.length >= MAX_PARTICLES) particles.shift();
-    particles.push(p);
+  function emit(opts) {
+    particles.push(Object.assign({
+      x: 0, y: 0, vx: 0, vy: 0, g: 0, life: 30, age: 0, size: 6,
+      color: "#fff", type: "dot", rot: 0, vr: 0, alpha: 1, text: null, sprite: null,
+      fade: true, shrink: false, drag: 1,
+    }, opts));
   }
-  function sparkBurst(x, y, color, count, speed, life, heavy) {
-    for (let i = 0; i < count; i++) {
-      const a = rand(0, TAU);
-      const sp = rand(speed * 0.4, speed);
-      spawnParticle({
-        kind: "shard", x, y,
-        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - rand(0, 80),
-        life: rand(life * 0.6, life), maxLife: life,
-        size: heavy ? rand(3, 7) : rand(2, 4.5),
-        color, grav: 600, add: true,
-      });
-    }
-    spawnParticle({ kind: "flash", x, y, life: 0.09, maxLife: 0.09, size: heavy ? 46 : 28, color, add: true });
-  }
-  function dustPuff(x, y, dir, count = 5) {
-    for (let i = 0; i < count; i++) {
-      spawnParticle({
-        kind: "dust", x: x + rand(-10, 10), y: y + rand(-4, 2),
-        vx: -dir * rand(30, 130) + rand(-30, 30), vy: rand(-60, -10),
-        life: rand(0.18, 0.34), maxLife: 0.34, size: rand(5, 11),
-        color: [210, 205, 196], grav: -40, add: false,
-      });
-    }
-  }
-  function koExplosion(x, y, color) {
-    for (let i = 0; i < 60; i++) {
-      const a = rand(0, TAU);
-      const sp = rand(120, 760);
-      spawnParticle({
-        kind: "shard", x, y,
-        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 140,
-        life: rand(0.3, 0.85), maxLife: 0.85, size: rand(2, 9),
-        color: Math.random() < 0.5 ? color : [255, 246, 230], grav: 760, add: true,
-      });
-    }
-    spawnParticle({ kind: "ring", x, y, life: 0.32, maxLife: 0.32, size: 220, color, add: true });
-    spawnParticle({ kind: "flash", x, y, life: 0.12, maxLife: 0.12, size: 130, color: [255, 252, 244], add: true });
-  }
+  function burst(x, y, n, fn) { for (let i = 0; i < n; i++) emit(fn(i)); }
   function updateParticles(dt) {
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
-      p.life -= dt;
-      if (p.life <= 0) { particles.splice(i, 1); continue; }
-      if (p.kind === "shard" || p.kind === "dust") {
-        p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.grav * dt;
-      }
-    }
-  }
-  function drawParticles(ctx, additivePass) {
-    for (const p of particles) {
-      if (!!p.add !== additivePass) continue;
-      const t = p.life / p.maxLife;
-      if (p.kind === "shard") {
-        ctx.fillStyle = rgb(p.color, t);
-        const s = p.size * t;
-        ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
-      } else if (p.kind === "dust") {
-        ctx.fillStyle = rgb(p.color, t * 0.42);
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * (1.4 - t * 0.4), 0, TAU);
-        ctx.fill();
-      } else if (p.kind === "flash") {
-        ctx.fillStyle = rgb(p.color, t * 0.9);
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * (1.25 - t), 0, TAU);
-        ctx.fill();
-      } else if (p.kind === "ring") {
-        ctx.strokeStyle = rgb(p.color, t);
-        ctx.lineWidth = 8 * t + 2;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * (1 - t), 0, TAU);
-        ctx.stroke();
-      }
+      p.age++;
+      p.vy += p.g * dt;
+      p.vx *= p.drag; p.vy *= p.drag;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.rot += p.vr;
+      if (p.age >= p.life) particles.splice(i, 1);
     }
   }
 
-  // ---------- floating combat text ----------
-  const floatTexts = [];
-  function addFloatText(text, x, y, color, big = false) {
-    floatTexts.push({ text, x, y, color, life: 0.95, maxLife: 0.95, big });
-    if (floatTexts.length > 40) floatTexts.shift();
-  }
-  function updateFloatTexts(dt) {
-    for (let i = floatTexts.length - 1; i >= 0; i--) {
-      const t = floatTexts[i];
-      t.life -= dt;
-      t.y -= 52 * dt;
-      if (t.life <= 0) floatTexts.splice(i, 1);
-    }
-  }
-  function drawFloatTexts(ctx) {
-    for (const t of floatTexts) {
-      const a = clamp(t.life / t.maxLife, 0, 1);
-      const pop = 1 + Math.max(0, (a - 0.82)) * 2.4;
-      ctx.globalAlpha = a;
-      strokedText(ctx, t.text, t.x, t.y, font((t.big ? 30 : 22) * pop, true), rgb(t.color), 5);
-      ctx.globalAlpha = 1;
-    }
-  }
-
-  // ---------- camera (trauma shake + smash-style zoom) ----------
-  const camera = {
-    x: W / 2, y: H / 2, zoom: 1, trauma: 0,
-    focus: null, focusZoom: 1.32, focusTimer: 0,
-    addTrauma(v) { this.trauma = clamp(this.trauma + v, 0, 1); },
-    punchIn(target, time = 0.9) { this.focus = target; this.focusTimer = time; },
-    update(dt, a, b) {
-      this.trauma = Math.max(0, this.trauma - 1.25 * dt);
-      let tx = W / 2, ty = H / 2, tz = 1;
-      if (this.focusTimer > 0 && this.focus) {
-        this.focusTimer -= dt;
-        tx = this.focus.cx; ty = this.focus.cy - 30; tz = this.focusZoom;
-      } else if (a && b) {
-        const pad = 230;
-        const minX = Math.min(a.cx, b.cx) - pad, maxX = Math.max(a.cx, b.cx) + pad;
-        const minY = Math.min(a.cy, b.cy) - pad * 0.9, maxY = FLOOR + 60;
-        tx = (minX + maxX) / 2;
-        ty = (minY + maxY) / 2;
-        tz = clamp(Math.min(W / (maxX - minX), H / (maxY - minY)), 1.0, 1.16);
-      }
-      const k = 1 - Math.pow(0.88, dt * 60);
-      const kz = 1 - Math.pow(0.93, dt * 60);
-      this.x += (tx - this.x) * k;
-      this.y += (ty - this.y) * k;
-      this.zoom += (tz - this.zoom) * kz;
-      // keep view inside the arena
-      const vw = W / this.zoom / 2, vh = H / this.zoom / 2;
-      this.x = clamp(this.x, vw, W - vw);
-      this.y = clamp(this.y, vh, H - vh);
+  // emitter presets
+  const FX = {
+    hitSpark(x, y, big) {
+      const f = fxImg("spark2");
+      emit({ x, y, life: big ? 14 : 9, type: "fxanim", frames: ["spark0", "spark1", "spark2", "spark3"], size: big ? 130 : 84 });
+      burst(x, y, big ? 14 : 8, () => ({
+        x, y, vx: rand(-460, 460), vy: rand(-520, 160), g: 1300, life: rand(12, 26) | 0,
+        size: rand(3, big ? 8 : 5), color: pick(["#ffd76a", "#ffab3d", "#fff7d1"]), type: "dot",
+      }));
     },
-    apply(ctx) {
-      const sh = this.trauma * this.trauma;
-      const ox = sh * 22 * rand(-1, 1);
-      const oy = sh * 16 * rand(-1, 1);
-      const rot = sh * 0.022 * rand(-1, 1);
-      ctx.translate(W / 2, H / 2);
-      ctx.scale(this.zoom, this.zoom);
-      ctx.rotate(rot);
-      ctx.translate(-this.x + ox, -this.y + oy);
+    guardSpark(x, y, just) {
+      emit({ x, y, life: 12, type: "fx", sprite: "guardhex", size: just ? 120 : 88, alpha: 0.9 });
+      if (just) burst(x, y, 10, () => ({
+        x, y, vx: rand(-300, 300), vy: rand(-380, 60), g: 900, life: 22,
+        size: rand(2, 5), color: "#9fe8ff", type: "dot",
+      }));
+    },
+    dust(x, y) {
+      burst(x, y, 5, () => ({
+        x: x + rand(-16, 16), y: y + rand(-6, 2), vx: rand(-120, 120), vy: rand(-90, -20),
+        life: rand(16, 30) | 0, size: rand(8, 18), color: "rgba(210,195,170,0.5)", type: "puff", shrink: false,
+      }));
+    },
+    confetti(x, y) {
+      burst(x, y, 40, () => ({
+        x: x + rand(-60, 60), y: y + rand(-40, 0), vx: rand(-260, 260), vy: rand(-680, -220),
+        g: 1500, life: rand(40, 90) | 0, size: rand(5, 10), vr: rand(-0.4, 0.4),
+        color: pick(["#ff5d7e", "#ffd76a", "#6ce4ff", "#9dff8a", "#d29bff"]), type: "rect",
+      }));
+    },
+    afterimage(f) {
+      emit({ x: f.x, y: f.y, life: 14, type: "ghost", char: f.charKey, pose: f.pose(),
+             facing: f.facing, scale: f.spriteScale(), alpha: 0.45 });
+    },
+    aura(x, y, color) {
+      burst(x, y, 3, () => ({
+        x: x + rand(-40, 40), y: y + rand(-10, 10), vx: rand(-30, 30), vy: rand(-420, -240),
+        life: rand(18, 34) | 0, size: rand(4, 9), color, type: "dot",
+      }));
     },
   };
 
-  // ---------- UI helpers: vignette + slanted fighting-game bars ----------
-  const vignette = (() => {
-    const c = document.createElement("canvas");
-    c.width = W; c.height = H;
-    const g = c.getContext("2d");
-    const grad = g.createRadialGradient(W / 2, H / 2 - 40, H * 0.42, W / 2, H / 2, H * 0.86);
-    grad.addColorStop(0, "rgba(4,6,12,0)");
-    grad.addColorStop(1, "rgba(4,6,12,0.46)");
-    g.fillStyle = grad;
-    g.fillRect(0, 0, W, H);
-    return c;
-  })();
-
-  function slantPath(ctx, x, y, w, h, skew = 10) {
-    ctx.beginPath();
-    ctx.moveTo(x + skew, y);
-    ctx.lineTo(x + w + skew, y);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x, y + h);
-    ctx.closePath();
+  // ---------- floating text / quotes / banners ----------
+  const floats = [];   // damage numbers, tags
+  function floatText(x, y, text, color, size = 30) {
+    floats.push({ x, y, text, color, size, age: 0, life: 46, vy: -110 });
   }
-  // layered slanted bar: back, ghost, fill, ticks, edge
-  function slantBar(ctx, x, y, w, h, layers, fromRight, skew = 8) {
-    slantPath(ctx, x, y, w, h, skew);
-    ctx.fillStyle = layers.back;
-    ctx.fill();
-    ctx.save();
-    slantPath(ctx, x, y, w, h, skew);
-    ctx.clip();
-    for (const [ratio, color] of layers.fills) {
-      if (ratio <= 0) continue;
-      const fw = (w + skew) * clamp(ratio, 0, 1);
-      ctx.fillStyle = color;
-      ctx.fillRect(fromRight ? x + (w + skew) - fw : x, y, fw, h);
-    }
-    if (layers.ticks) {
-      ctx.strokeStyle = "rgba(10,12,22,0.45)";
-      ctx.lineWidth = 1.5;
-      for (let i = 1; i < layers.ticks; i++) {
-        const tx = x + (w / layers.ticks) * i;
-        ctx.beginPath();
-        ctx.moveTo(tx + skew * (1 - 0), y);
-        ctx.lineTo(tx, y + h);
-        ctx.stroke();
-      }
-    }
-    ctx.restore();
-    slantPath(ctx, x, y, w, h, skew);
-    ctx.strokeStyle = layers.edge || "rgba(248,236,212,0.9)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
+  const bubbles = [];  // speech bubbles {fighter, text, age, life}
+  function say(f, text) {
+    if (!text) return;
+    for (let i = bubbles.length - 1; i >= 0; i--) if (bubbles[i].f === f) bubbles.splice(i, 1);
+    bubbles.push({ f, text, age: 0, life: 95 });
+    AU.sfx("quote");
+  }
+  let banner = null;   // {text, sub, age, life, size}
+  function showBanner(text, sub, life = 70, size = 110) {
+    banner = { text, sub, age: 0, life, size };
   }
 
-  // ---------- projectiles (port of bullet.py) ----------
+  // ---------- camera ----------
+  const cam = { x: S.stageW / 2, zoom: 1, trauma: 0, tx: S.stageW / 2, tzoom: 1, punchX: 0, punchY: 0 };
+  function updateCamera(f1, f2, dt) {
+    const mid = (f1.x + f2.x) / 2;
+    const span = Math.abs(f1.x - f2.x) + 560;
+    cam.tzoom = clamp(W / span, 0.82, 1.06);
+    cam.tx = clamp(mid, W / (2 * cam.tzoom), S.stageW - W / (2 * cam.tzoom));
+    cam.x = lerp(cam.x, cam.tx, 0.12);
+    cam.zoom = lerp(cam.zoom, cam.tzoom, 0.09);
+    cam.trauma = Math.max(0, cam.trauma - 2.4 * dt);
+    const sh = cam.trauma * cam.trauma;
+    cam.punchX = rand(-1, 1) * 34 * sh;
+    cam.punchY = rand(-1, 1) * 22 * sh;
+  }
+  const shake = amt => { cam.trauma = Math.min(1, cam.trauma + amt); };
+  const w2sx = x => (x - cam.x) * cam.zoom + W / 2 + cam.punchX;
+  const w2sy = y => (y - FLOOR) * cam.zoom + FLOOR - 40 * (1 - cam.zoom) + cam.punchY;
+
+  // ---------- hitstop ----------
+  let hitstop = 0;
+  let timeScale = 1, slowFrames = 0;
+
+  // ---------- projectiles ----------
+  const projectiles = [];
   class Projectile {
-    constructor(o) {
-      Object.assign(this, {
-        shape: "orb", behavior: "linear", width: 36, height: 20, radius: 18,
-        life: 2.0, knockbackY: -210, waveAmp: 0, waveSpeed: 0, gravity: 0,
-        rotationSpeed: 120, returnDelay: 0, returnSpeed: 440, anchorOwner: null,
-        orbitRadius: 0, orbitSpeed: 0, orbitAngle: 0, floorLock: null,
-        age: 0, returning: false, glow: o.color, dead: false, close: false, travel: 0,
-      }, o);
-      this.baseY = this.y;
-      this.spawnX = this.x;
-      this.trail = [];
-    }
-    get rect() {
-      if (this.shape === "orb") {
-        return { x: this.x - this.radius, y: this.y - this.radius, w: this.radius * 2, h: this.radius * 2 };
-      }
-      return { x: this.x - this.width / 2, y: this.y - this.height / 2, w: this.width, h: this.height };
-    }
-    update(dt, anchors) {
-      this.age += dt;
-      this.life -= dt;
-      if (this.life <= 0) return false;
-      if (this.behavior === "orbit") {
-        const anchor = anchors[this.anchorOwner || this.owner];
-        if (!anchor) return false;
-        this.orbitAngle += this.orbitSpeed * dt;
-        const a = (this.orbitAngle * Math.PI) / 180;
-        this.x = anchor.x + Math.cos(a) * this.orbitRadius;
-        this.y = anchor.y + Math.sin(a) * this.orbitRadius * 0.65;
-      } else if (this.behavior === "boomerang") {
-        const anchor = anchors[this.anchorOwner || this.owner];
-        if (!this.returning && this.age >= this.returnDelay && anchor) this.returning = true;
-        if (this.returning && anchor) {
-          const dx = anchor.x - this.x, dy = anchor.y - this.y;
-          const len = Math.hypot(dx, dy);
-          if (len > 0.1) {
-            this.vx = (dx / len) * this.returnSpeed;
-            this.vy = (dy / len) * this.returnSpeed;
-          }
-        }
-        this.x += this.vx * dt; this.y += this.vy * dt;
-      } else if (this.behavior === "ground_wave") {
-        this.x += this.vx * dt;
-        const base = this.floorLock !== null ? this.floorLock : this.baseY;
-        this.y = base + Math.sin(this.age * this.waveSpeed) * this.waveAmp;
-      } else if (this.behavior === "wave") {
-        this.x += this.vx * dt;
-        this.baseY += this.vy * dt;
-        this.y = this.baseY + Math.sin(this.age * this.waveSpeed) * this.waveAmp;
-      } else {
-        this.x += this.vx * dt; this.y += this.vy * dt;
-        if (this.gravity) this.vy += this.gravity * dt;
-      }
-      this.trail.push({ x: this.x, y: this.y });
-      if (this.trail.length > 6) this.trail.shift();
-      return true;
-    }
-    draw(ctx) {
-      for (let i = 0; i < this.trail.length; i++) {
-        const pt = this.trail[i];
-        ctx.fillStyle = rgb(this.glow, (0.08 + i * 0.07));
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 2.5 + i * 1.6, 0, TAU);
-        ctx.fill();
-      }
-      ctx.save();
-      ctx.translate(this.x, this.y);
-      if (this.shape === "orb") this.drawOrb(ctx);
-      else if (this.shape === "beam") this.drawBeam(ctx);
-      else if (this.shape === "mic") this.drawMic(ctx);
-      else if (this.shape === "blade") this.drawBlade(ctx);
-      else this.drawCard(ctx, this.shape === "receipt");
-      ctx.restore();
-    }
-    drawOrb(ctx) {
-      ctx.fillStyle = rgb(this.glow, 0.32);
-      ctx.beginPath(); ctx.arc(0, 0, this.radius + 10, 0, TAU); ctx.fill();
-      ctx.fillStyle = rgb(this.color);
-      ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, TAU); ctx.fill();
-      ctx.fillStyle = "rgba(252,250,244,0.95)";
-      ctx.beginPath(); ctx.arc(-this.radius * 0.3, -this.radius * 0.25, Math.max(3, this.radius / 4), 0, TAU); ctx.fill();
-    }
-    drawBeam(ctx) {
-      const w = this.width, h = this.height;
-      ctx.fillStyle = rgb(this.glow, 0.33);
-      roundRect(ctx, -w / 2 - 9, -h / 2 - 9, w + 18, h + 18, (h + 18) / 2); ctx.fill();
-      ctx.fillStyle = rgb(this.color, 0.85);
-      roundRect(ctx, -w / 2 - 3, -h / 2 - 3, w + 6, h + 6, (h + 6) / 2); ctx.fill();
-      ctx.fillStyle = "rgba(255,246,232,0.96)";
-      roundRect(ctx, -w / 2, -h / 2, w, h, h / 2); ctx.fill();
-    }
-    drawCard(ctx, torn) {
-      const w = this.width, h = this.height;
-      ctx.rotate(Math.sin(this.age * (this.rotationSpeed * Math.PI / 180)) * 0.21);
-      ctx.fillStyle = rgb(this.glow, 0.38);
-      roundRect(ctx, -w / 2 - 6, -h / 2 - 6, w + 12, h + 12, 10); ctx.fill();
-      ctx.fillStyle = rgb(this.color);
-      roundRect(ctx, -w / 2, -h / 2, w, h, 8); ctx.fill();
-      ctx.fillStyle = "rgb(250,244,230)";
-      roundRect(ctx, -w / 2 + 5, -h / 2 + 4, w - 10, h - 8, 6); ctx.fill();
-      ctx.strokeStyle = rgb(this.color, 0.85);
-      ctx.lineWidth = 2;
-      if (torn) {
-        for (let y = -h / 2 + 6; y < h / 2 - 3; y += 6) {
-          ctx.beginPath(); ctx.moveTo(-w / 2 + 7, y); ctx.lineTo(w / 2 - 7, y); ctx.stroke();
-        }
-      } else {
-        ctx.beginPath(); ctx.moveTo(-w / 2 + 6, -h / 2 + 6); ctx.lineTo(w / 2 - 6, h / 2 - 6); ctx.stroke();
-      }
-    }
-    drawMic(ctx) {
-      ctx.rotate(Math.sin(this.age * 6) * 0.28);
-      ctx.fillStyle = rgb(this.glow, 0.35);
-      ctx.beginPath(); ctx.ellipse(0, 0, this.width * 0.6, this.height * 0.7, 0, 0, TAU); ctx.fill();
-      ctx.strokeStyle = rgb(this.color);
-      ctx.lineWidth = 7;
-      ctx.beginPath(); ctx.moveTo(2, -6); ctx.lineTo(14, this.height * 0.55); ctx.stroke();
-      ctx.fillStyle = rgb(this.color);
-      ctx.beginPath(); ctx.arc(0, -this.height * 0.28, 12, 0, TAU); ctx.fill();
-      ctx.strokeStyle = "rgba(245,245,245,0.9)";
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(0, -this.height * 0.28, 9, 0, TAU); ctx.stroke();
-    }
-    drawBlade(ctx) {
-      const ang = Math.atan2(this.vy, this.vx);
-      ctx.rotate(ang);
-      const w = this.width, h = this.height;
-      ctx.fillStyle = rgb(this.glow, 0.3);
-      ctx.beginPath();
-      ctx.moveTo(-w / 2 - 8, 0); ctx.lineTo(0, -h / 2 - 8);
-      ctx.lineTo(w / 2 + 8, 0); ctx.lineTo(0, h / 2 + 8);
-      ctx.closePath(); ctx.fill();
-      ctx.fillStyle = rgb(this.color);
-      ctx.beginPath();
-      ctx.moveTo(-w / 2, 0); ctx.lineTo(0, -h / 2);
-      ctx.lineTo(w / 2, 0); ctx.lineTo(0, h / 2);
-      ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = "rgba(255,246,234,0.92)";
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(-w / 2 + 10, 0); ctx.lineTo(w / 2 - 10, 0); ctx.stroke();
-    }
-  }
-
-  // ---------- kill line (port of KillLineEvent) ----------
-  class KillLine {
-    constructor() { this.bandY = FLOOR - 82; this.thickness = 20; this.damage = 24; this.reset(); }
-    reset() { this.phase = "idle"; this.timer = 0; this.used = false; this.hits = new Set(); this.forceCd = 0; }
-    trigger() {
-      if (this.used || this.phase !== "idle") return false;
-      this.used = true; this.phase = "warning"; this.timer = 0.92; this.hits.clear();
-      return true;
-    }
-    forceTrigger() {
-      if (this.phase !== "idle" || this.forceCd > 0) return;
-      this.forceCd = 5.0; // can't keep the line permanently lit
-      this.used = true; this.phase = "warning"; this.timer = 0.42; this.hits.clear();
+    constructor(owner, spec, x, y, dir) {
+      Object.assign(this, spec);
+      this.owner = owner; this.x = x; this.y = y;
+      this.vx = spec.vx * dir; this.dir = dir;
+      this.vy = spec.vy || 0;
+      this.startX = x; this.age = 0; this.dead = false;
+      this.phase = "out"; this.rotation = 0;
+      this.tier = spec.tier || 1;
     }
     update(dt) {
-      this.forceCd = Math.max(0, this.forceCd - dt);
-      if (this.phase === "idle") return null;
-      this.timer -= dt;
-      if (this.phase === "warning" && this.timer <= 0) {
-        this.phase = "active"; this.timer = 0.74;
-        return "fire";
-      }
-      if (this.phase === "active" && this.timer <= 0) { this.phase = "cooldown"; this.timer = 0.38; }
-      else if (this.phase === "cooldown" && this.timer <= 0) this.phase = "idle";
-      return null;
-    }
-    get band() {
-      const margin = 96;
-      return { x: margin, y: this.bandY - this.thickness / 2, w: W - margin * 2, h: this.thickness };
-    }
-    canHit(key) { return this.phase === "active" && !this.hits.has(key); }
-    draw(ctx, pulse) {
-      if (this.phase === "idle") return;
-      const b = this.band;
-      if (this.phase === "warning") {
-        const a = 0.34 + Math.abs(Math.sin(pulse * 7)) * 0.5;
-        ctx.fillStyle = `rgba(255,100,150,${a})`;
-        roundRect(ctx, b.x, b.y, b.w, b.h, 12); ctx.fill();
+      this.age++;
+      if (this.boomerang) {
+        if (this.phase === "out") {
+          this.x += this.vx * dt;
+          if (Math.abs(this.x - this.startX) > this.boomerang) this.phase = "back";
+        } else {
+          const tx = this.owner.x, dir = Math.sign(tx - this.x) || 1;
+          this.x += Math.abs(this.vx) * 1.15 * dir * dt;
+          if (Math.abs(this.x - tx) < 40 && !this.owner.ko) {
+            this.dead = true;                          // 叼盘成功
+            this.owner.meter = clamp(this.owner.meter + 6, 0, S.maxMeter);
+            floatText(this.owner.x, this.owner.y - this.owner.h - 30, "叼盘成功!", "#f6d69c", 26);
+          }
+        }
       } else {
-        ctx.fillStyle = "rgba(255,90,155,0.36)";
-        roundRect(ctx, b.x, b.y - 16, b.w, b.h + 32, 16); ctx.fill();
-        ctx.fillStyle = "rgba(255,132,194,0.85)";
-        roundRect(ctx, b.x, b.y - 6, b.w, b.h + 12, 14); ctx.fill();
-        ctx.fillStyle = "rgba(255,239,245,0.98)";
-        roundRect(ctx, b.x, b.y, b.w, b.h - 2, 10); ctx.fill();
+        this.vy += (this.g || 0) * dt;
+        this.x += this.vx * dt; this.y += this.vy * dt;
       }
-      strokedText(ctx, "牢A 斩杀线", W / 2, b.y - 26, font(22, true), "rgb(255,244,246)", 5);
+      this.rotation += (this.spin || 0) * dt;
+      if (this.maxDist && Math.abs(this.x - this.startX) > this.maxDist) this.dead = true;
+      if (this.y > FLOOR + 10 || this.x < -100 || this.x > S.stageW + 100 || this.age > 400) this.dead = true;
     }
+    rect() { return { x: this.x - this.r, y: this.y - this.r, w: this.r * 2, h: this.r * 2 }; }
+  }
+  function spawnProj(owner, spec, xoff, yoff) {
+    const own = projectiles.filter(p => p.owner === owner && !p.dead).length;
+    if (own >= S.projCap) return null;
+    const p = new Projectile(owner, spec, owner.x + (xoff || 70) * owner.facing, owner.y - owner.h * (yoff || 0.55), owner.facing);
+    projectiles.push(p);
+    AU.sfx("shoot");
+    return p;
   }
 
-  // ---------- fighter ----------
-  const DIRS = ["neutral", "up", "down", "left", "right"];
+  // ---------- slow fields ----------
+  const fields = [];
+
+  // ---------- Fighter ----------
+  const POSE_FLOW = {  // state -> pose
+    idle: "idle", walk: "walk", dash: "dash", backdash: "dash", jump: "jump",
+    guard: "guard", guardstun: "guard", hitstun: "hit", launched: "hit",
+    crumple: "hit", knockdown: "defeat", ko: "defeat", win: "win", taunt: "taunt",
+    intro: "taunt", throwing: "smash", grabbed: "hit", ranbu_victim: "hit",
+  };
+
   class Fighter {
-    constructor(bp, headImg, startX, facing, isPlayer, uid) {
-      this.bp = bp;
-      this.uid = uid || (isPlayer ? "p1" : "p2");
-      this.head = headImg;
-      this.w = S.fighterW;
-      this.h = S.fighterH;
-      this.isPlayer = isPlayer;
-      this.afterimages = [];
-      this.reset(startX, facing);
+    constructor(charKey, side, pad, isAI) {
+      this.charKey = charKey;
+      this.data = D.fighters[charKey];
+      this.side = side;                  // 0 left, 1 right
+      this.pad = pad; this.isAI = isAI;
+      this.gold = false;
+      const idle = poseData(charKey, "idle");
+      this.scale = S.charH / idle.h;
+      this.reset(side === 0 ? S.stageW / 2 - 260 : S.stageW / 2 + 260, side === 0 ? 1 : -1);
+      this.maxHp = this.data.hp || S.maxHealth;
+      this.hp = this.maxHp;
+      this.meter = 0;
+      this.rounds = 0;
     }
-    reset(startX, facing) {
-      this.x = startX;
-      this.y = FLOOR - this.h;
-      this.vx = 0; this.vy = 0;
-      this.moveAxis = 0;
+    reset(x, facing) {
+      this.x = x; this.y = FLOOR; this.vx = 0; this.vy = 0;
       this.facing = facing;
-      this.health = S.maxHealth;
-      this.displayedHealth = S.maxHealth; // ghost bar
-      this.ghostHold = 0;
+      this.state = "idle"; this.stateT = 0;
+      this.move = null; this.moveFrame = 0; this.chain = 0; this.moveHit = false;
+      this.airborne = false; this.jumps = 0;
+      this.guardGauge = S.maxGuard;
+      this.guardHeld = 0;
+      this.hitstun = 0; this.blockstun = 0;
+      this.invuln = 0;
+      this.cds = { s1: 0, s2: 0, counter: 0, throw: 0, dash: 0, backdash: 0 };
+      this.combo = { hits: 0, dmg: 0, timer: 0 };
+      this.victimCombo = 0;
+      this.juggleLift = 1;
+      this.slowT = 0; this.slowMul = 1;
+      this.ko = false;
+      this.reflectT = 0;
+      this.armorT = 0; this.armorUsed = false;
+      this.ranbuScript = null;
+      this.ultScript = null; this.ultPose = null;
+      this.hidden = false; this.banCard = false;
+      this.w = 78;                                  // pushbox half-ish width
+      this.h = S.charH * 0.92;
+      this.lastLand = 0;
+      this.introDone = false;
+      this.tauntT = 0;
+      this.aiMem = { lastP1Buttons: [], plan: null, planT: 0, reactT: 0 };
+    }
+    get opp() { return this === Game.f1 ? Game.f2 : Game.f1; }
+    get slowNow() { return this.slowT > 0 ? this.slowMul : 1; }
+    pose() {
+      if (this.state === "attack" && this.move) return this.move.pose;
+      if (this.state === "special" && this.move) return this.move.pose || "cast";
+      if (this.state === "ult") return this.ultPose || "channel";
+      if (this.state === "jump") return this.move ? this.move.pose : "jump";
+      return POSE_FLOW[this.state] || "idle";
+    }
+    spriteScale() { return this.scale; }
+    rect() { return { x: this.x - this.w / 2, y: this.y - this.h, w: this.w, h: this.h }; }
+    hurtRect() {
+      const r = this.rect();
+      if (this.state === "launched" || this.airborne) { r.y += 20; r.h -= 20; }
+      return r;
+    }
+
+    // ---- state helpers ----
+    setState(st, t = 0) { this.state = st; this.stateT = t; }
+    busy() {
+      return ["attack", "special", "ult", "hitstun", "guardstun", "launched", "crumple",
+              "knockdown", "throwing", "grabbed", "dash", "backdash", "ko", "win", "intro",
+              "ranbu_victim", "taunt"].includes(this.state);
+    }
+    canAct() { return !this.busy() || (this.state === "jump"); }
+
+    // ---- per-frame update ----
+    update(dt) {
+      this.stateT++;
+      frameCooldowns(this.cds);
+      if (this.invuln > 0) this.invuln--;
+      if (this.slowT > 0) this.slowT--;
+      if (this.reflectT > 0) this.reflectT--;
+      if (this.armorT > 0) this.armorT--;
+      if (this.combo.timer > 0 && --this.combo.timer === 0) this.endCombo();
+      if (this.tauntT > 0) this.tauntT--;
+      this.backHeld = this.holdingGuard() ? (this.backHeld || 0) + 1 : 0;
+
+      // gold boss: once per round, a telegraphed burst of golden armor
+      if (this.gold && !this.armorUsed && this.hp < this.maxHp * 0.5 && Game.phase === "fight") {
+        this.armorUsed = true;
+        this.armorT = 180;
+        say(this, "年轻人,不讲武德。");
+        AU.sfx("counter");
+        shake(0.4);
+      }
+      if (this.armorT > 0 && frameNow % 4 === 0) FX.aura(this.x, this.y - this.h * 0.5, "#ffe9a8");
+      if (this.gold && frameNow % 2 === 0) FX.aura(this.x, this.y - this.h * 0.4, "#ffe9a8");
+
+      // guard gauge regen
+      if (this.state !== "guard" && this.state !== "guardstun" && this.guardGauge < S.maxGuard)
+        this.guardGauge = clamp(this.guardGauge + S.guardRegen * dt, 0, S.maxGuard);
+
+      const mv = this.slowNow;
+
+      switch (this.state) {
+        case "idle": case "walk": {
+          if (Game.phase !== "fight") { this.vx = 0; break; }
+          this.handleNeutral(dt, mv);
+          break;
+        }
+        case "jump": {
+          if (this.move) this.updateMove(dt);
+          else this.handleAir(dt, mv);
+          break;
+        }
+        case "dash": {
+          this.vx = S.dashSpeed * this.facing * mv;
+          if (this.stateT % 3 === 0) FX.afterimage(this);
+          if (this.stateT >= S.dashFrames) { this.setState("idle"); this.vx = 0; this.cds.dash = S.dashCd; }
+          break;
+        }
+        case "backdash": {
+          this.vx = -S.backdashSpeed * this.facing * mv;
+          if (this.stateT <= S.backdashIframes) this.invuln = 2;
+          if (this.stateT % 3 === 0) FX.afterimage(this);
+          if (this.stateT >= S.backdashFrames) { this.setState("idle"); this.vx = 0; }
+          break;
+        }
+        case "attack": case "special": this.updateMove(dt); break;
+        case "ult": this.updateUlt(dt); break;
+        case "guard": {
+          this.vx = 0;
+          this.guardHeld++;
+          if (!this.holdingGuard()) this.setState("idle");
+          break;
+        }
+        case "guardstun": {
+          this.vx *= 0.86;
+          if (--this.blockstun <= 0) this.setState(this.holdingGuard() ? "guard" : "idle");
+          break;
+        }
+        case "hitstun": {
+          this.vx *= 0.9;
+          if (--this.hitstun <= 0) this.setState("idle");
+          break;
+        }
+        case "launched": {
+          this.vy += S.gravity * dt;
+          this.x += this.vx * dt; this.y += this.vy * dt;
+          if (this.y >= FLOOR && this.vy > 0) {
+            this.y = FLOOR;
+            if (this.hp <= 0) { this.enterKO(); break; }
+            this.vy = 0; this.vx = 0;
+            this.setState("knockdown"); this.invuln = 40;
+            FX.dust(this.x, FLOOR);
+            AU.sfx("land");
+          }
+          return;                                    // custom integration
+        }
+        case "knockdown": {
+          if (this.stateT >= 34) { this.setState("idle"); this.juggleLift = 1; }
+          break;
+        }
+        case "crumple": {
+          this.vx = 0;
+          if (this.stateT >= S.crumpleFrames) this.setState("idle");
+          break;
+        }
+        case "throwing": this.updateThrow(dt); break;
+        case "grabbed": {
+          this.vx = 0;
+          // safety: release if the grabber was interrupted
+          const g = this.opp;
+          if (g.state !== "throwing" && !(g.state === "special" && g.move)) this.setState("idle");
+          break;
+        }
+        case "ranbu_victim": this.vx = 0; break;
+        case "taunt": {
+          if (this.stateT >= 55) this.setState("idle");
+          break;
+        }
+        case "ko": case "win": case "intro": this.vx *= 0.85; break;
+      }
+
+      // gravity & integration for grounded/air states
+      if (this.state === "jump") {
+        const ff = this.pad.down("down") ? S.fastFallMul : 1;
+        this.vy += S.gravity * ff * dt;
+        this.x += this.vx * dt; this.y += this.vy * dt;
+        if (this.y >= FLOOR && this.vy > 0) {
+          this.y = FLOOR; this.vy = 0; this.airborne = false;
+          this.setState("idle");
+          FX.dust(this.x, FLOOR);
+          AU.sfx("land");
+          this.lastLand = frameNow;
+        }
+      } else if (this.state !== "launched" && !(this.move && this.move.selfMove)) {
+        this.x += this.vx * dt;
+        if (this.y < FLOOR && !["jump"].includes(this.state)) {
+          this.vy += S.gravity * dt; this.y = Math.min(FLOOR, this.y + this.vy * dt);
+          if (this.y >= FLOOR) { this.y = FLOOR; this.vy = 0; }
+        }
+      }
+
+      this.x = clamp(this.x, S.wallPad + this.w / 2, S.stageW - S.wallPad - this.w / 2);
+
+      // face opponent when free
+      if (["idle", "walk"].includes(this.state) && Game.phase === "fight")
+        this.facing = this.x <= this.opp.x ? 1 : -1;
+    }
+
+    holdingGuard() {
+      // hold back relative to opponent while grounded
+      const backName = this.facing === 1 ? "left" : "right";
+      return this.pad.down(backName) && !this.airborne && this.y >= FLOOR - 1;
+    }
+
+    handleNeutral(dt, mv) {
+      const p = this.pad;
+      const fwdName = this.facing === 1 ? "right" : "left";
+      const backName = this.facing === 1 ? "left" : "right";
+
+      // double-tap dash
+      if (this.cds.dash <= 0 && p.doubleTap(fwdName)) { this.setState("dash"); AU.sfx("dash"); return; }
+      if (this.cds.backdash <= 0 && p.doubleTap(backName)) {
+        this.setState("backdash"); this.cds.backdash = S.backdashCd; AU.sfx("dash"); return;
+      }
+
+      // walk
+      let dir = 0;
+      if (p.down("left")) dir -= 1;
+      if (p.down("right")) dir += 1;
+      const backing = dir !== 0 && dir !== this.facing;
+      this.vx = dir * (backing ? S.backSpeed : S.walkSpeed) * mv;
+      this.setState(dir !== 0 ? "walk" : "idle");
+
+      // jump
+      if (p.press("up")) {
+        this.vy = S.jumpVy; this.airborne = true;
+        this.setState("jump"); AU.sfx("jump");
+        FX.dust(this.x, FLOOR);
+        return;
+      }
+
+      // attacks
+      if (p.press("light")) return this.startLight();
+      if (p.press("heavy")) return this.startHeavy();
+      if (p.press("s1")) return this.startSpecial("s1");
+      if (p.press("s2")) return this.startSpecial("s2");
+      if (p.press("ult")) return this.startUlt();
+      if (p.press("taunt") && this.tauntT <= 0) {
+        this.setState("taunt"); this.tauntT = 120;
+        say(this, pick(this.data.quotes.taunt || ["……"]));
+      }
+    }
+
+    handleAir(dt, mv) {
+      const p = this.pad;
+      let dir = 0;
+      if (p.down("left")) dir -= 1;
+      if (p.down("right")) dir += 1;
+      this.vx = clamp(this.vx + dir * 1400 * dt, -S.airDrift - 140, S.airDrift + 140) * 1;
+      if (p.press("light")) return this.startAirMove("airLight", "flykick");
+      if (p.press("heavy")) return this.startAirMove("airHeavy", "smash");
+    }
+
+    // ---- moves ----
+    startLight() {
+      const fd = D.frames.light;
+      const chain = this.chainOK ? this.chain : 0;
+      const last = chain >= 2;
+      const f = last ? D.frames.light3 : fd;
+      this.move = {
+        kind: "light", pose: last ? "sweep" : "jab",
+        startup: f.startup, active: f.active, recovery: f.recovery,
+        dmg: f.dmg, chainWindow: fd.chainWindow,
+        knockback: last ? 340 : 150, launch: last ? -300 : 0,
+        range: last ? 165 : 150, chainIdx: chain,
+      };
+      this.chain = chain + 1;
+      this.chainOK = false;
+      this.moveFrame = 0; this.moveHit = false;
+      this.setState("attack");
+    }
+    startHeavy() {
+      // point-blank vs grounded guarding/neutral opponent -> throw
+      const o = this.opp;
+      const dist = Math.abs(this.x - o.x);
+      if (this.cds.throw <= 0 && dist < S.throwRange + this.w &&
+          !o.airborne && ["guard", "guardstun", "idle", "walk"].includes(o.state)) {
+        this.startThrow(); return;
+      }
+      const f = D.frames.heavy;
+      this.move = {
+        kind: "heavy", pose: "uppercut",
+        startup: f.startup, active: f.active, recovery: f.recovery,
+        dmg: f.dmg, knockback: 250, launch: -760, range: 175, antiAir: true,
+      };
+      this.chain = 0; this.moveFrame = 0; this.moveHit = false;
+      this.setState("attack");
+    }
+    startAirMove(key, pose) {
+      if (this.move) return;
+      const f = D.frames[key];
+      this.move = {
+        kind: key, pose,
+        startup: f.startup, active: f.active, recovery: f.recovery,
+        dmg: f.dmg, knockback: 220, launch: key === "airHeavy" ? 500 : -200,
+        range: 150, air: true, spike: key === "airHeavy",
+      };
+      this.moveFrame = 0; this.moveHit = false;
+    }
+    startThrow() {
+      this.cds.throw = S.throwCd;
+      this.move = { kind: "throw", pose: "smash", startup: S.throwStartup, active: 2, recovery: 20, dmg: S.throwDmg };
+      this.moveFrame = 0; this.moveHit = false;
+      this.setState("throwing");
+    }
+    startSpecial(slot) {
+      const spec = this.data.kit[slot];
+      if (!spec || this.cds[slot] > 0) return;
+      this.cds[slot] = spec.cd;
+      SPECIALS[spec.id](this, spec);
+    }
+    startUlt() {
+      if (this.meter < S.maxMeter) return;
       this.meter = 0;
-      this.meterWasFull = false;
-      this.guardHeat = 0;
-      this.guardRequested = false;
-      this.guardActive = false;
-      this.guardBreakTimer = 0;
-      this.onGround = true;
-      this.fastFall = false;
-      this.jumpsUsed = 0;
-      this.airDashesLeft = 1;
-      this.basicCd = 0; this.skillCd = 0; this.dashCd = 0;
-      this.hitstun = 0; this.invuln = 0; this.flash = 0;
-      this.reflectTimer = 0;
-      this.speedBuffTimer = 0; this.buffShots = 0;
-      this.dashTimer = 0;
-      this.pose = "idle"; this.poseDir = "neutral"; this.poseTimer = 0;
-      this.anim = 0;
-      this.squashX = 1; this.squashY = 1;
-      this.coyote = 0;
-      this.runVel = 0;
-      this.skidCd = 0;
-      this.dashDir = facing;
-      this.dashSpeedCur = S.dashSpeed;
-      this.comboTaken = 0;
-      this.comboTakenTimer = 0;
-      this.guardActiveTime = 0;
-      this.combo = 0; this.comboTimer = 0; this.comboPop = 0;
-      this.afterimages.length = 0;
+      const u = this.data.kit.ult;
+      Game.startUltCinematic(this, u);
     }
-    get cx() { return this.x + this.w / 2; }
-    get cy() { return this.y + this.h / 2; }
-    get hurtbox() { return { x: this.x, y: this.y, w: this.w, h: this.h }; }
-    get healthRatio() { return Math.max(0, this.health / S.maxHealth); }
-    get meterRatio() { return clamp(this.meter / S.maxMeter, 0, 1); }
-    get guardRatio() { return clamp(1 - this.guardHeat / S.maxGuardHeat, 0, 1); }
 
-    setMove(axis) {
-      this.moveAxis = axis;
-      if (Math.abs(axis) > 0.1 && this.hitstun <= 0 && this.dashTimer <= 0) {
-        this.facing = axis > 0 ? 1 : -1;
+    updateMove(dt) {
+      if (!this.move) { this.setState("idle"); return; }
+      this.moveFrame++;
+      const m = this.move;
+      // special-driven scripts
+      if (m.script) { m.script(this, this.moveFrame, dt); }
+      const total = m.startup + m.active + m.recovery;
+      const inActive = this.moveFrame > m.startup && this.moveFrame <= m.startup + m.active;
+      if (inActive && !this.moveHit && m.kind !== "none") this.tryHit(m);
+      // light chain
+      if (m.kind === "light" && this.chainOK && this.pad.press("light") &&
+          this.moveFrame > m.startup + m.active) {
+        this.startLight(); return;
       }
-    }
-    jump() {
-      if (this.hitstun > 0 || this.dashTimer > 0) return false;
-      if (this.onGround || this.coyote > 0) {
-        this.vy = -S.jumpSpeed;
-        this.onGround = false;
-        this.coyote = 0;
-        this.jumpsUsed = 1;
-        this.pose = "jump";
-        this.squashX = 0.82; this.squashY = 1.22;
-        dustPuff(this.cx, this.y + this.h, 0, 4);
-        AU.jump();
-        return true;
+      if (this.moveFrame >= total) {
+        this.move = null; this.chain = 0; this.chainOK = false;
+        this.setState(this.airborne ? "jump" : "idle");
       }
-      if (this.jumpsUsed < 2) {
-        this.vy = -S.jumpSpeed * 0.9;
-        this.jumpsUsed += 1;
-        this.pose = "jump";
-        this.squashX = 0.85; this.squashY = 1.18;
-        AU.jump();
-        return true;
-      }
-      return false;
+      if (!m.air && !m.selfMove) this.vx *= 0.8;
     }
-    dash() {
-      if (this.dashCd > 0 || this.hitstun > 0 || this.guardActive) return false;
-      if (!this.onGround && this.airDashesLeft <= 0) return false;
-      // dash follows held direction; away from facing = backdash with i-frames
-      this.dashDir = Math.abs(this.moveAxis) > 0.1 ? Math.sign(this.moveAxis) : this.facing;
-      const back = this.dashDir !== this.facing;
-      this.dashCd = 0.74;
-      this.dashTimer = back ? 0.10 : S.dashDuration;
-      this.dashSpeedCur = back ? 900 : S.dashSpeed;
-      if (back) this.invuln = Math.max(this.invuln, 0.12);
-      this.vy *= 0.26;
-      if (!this.onGround) this.airDashesLeft -= 1;
-      this.pose = "dash"; this.poseTimer = 0.12;
-      dustPuff(this.cx - this.dashDir * 30, this.y + this.h - 6, this.dashDir, 6);
-      AU.dash();
-      return true;
-    }
-    gainMeter(v) {
-      this.meter = clamp(this.meter + v, 0, S.maxMeter);
-      if (this.meter >= S.maxMeter && !this.meterWasFull) {
-        this.meterWasFull = true;
-        AU.meterFull();
-      }
-      if (this.meter < S.maxMeter) this.meterWasFull = false;
-    }
-    takeDamage(damage, knockDir, launchY) {
-      if (this.invuln > 0) return [false, false, false];
-      const blocked = this.guardActive && this.guardBreakTimer <= 0;
-      const justGuard = blocked && this.guardActiveTime < 0.15;
-      const original = damage;
-      if (blocked) {
-        // planted guard: chip 25% (0% on just-guard), no launch, keep grounded
-        damage = justGuard ? 0 : Math.max(1, Math.round(damage * 0.25));
-        this.guardHeat = Math.min(S.maxGuardHeat, this.guardHeat + original * (justGuard ? 1.5 : 3.0));
-        this.vx = knockDir * 110;
-        this.hitstun = 0.05; this.invuln = 0.08; this.flash = justGuard ? 0 : 0.08;
-        if (justGuard) this.gainMeter(8);
-        if (this.guardHeat >= S.maxGuardHeat) {
-          this.guardBreakTimer = 1.0;
-          this.guardActive = false; this.guardRequested = false;
-          AU.guardBreak();
+
+    updateThrow(dt) {
+      this.moveFrame++;
+      const m = this.move, o = this.opp;
+      if (this.moveFrame === m.startup) {
+        const dist = Math.abs(this.x - o.x);
+        if (dist < S.throwRange + this.w && !o.airborne && !o.invuln && !o.ko) {
+          m.connected = true;
+          o.setState("grabbed");
+          o.facing = -this.facing;
+          AU.sfx("throwgrab");
+          hitstop = 8;
         }
-      } else {
-        // victim-side combo tracking drives hitstun + juggle decay
-        if (this.comboTakenTimer > 0 || this.hitstun > 0) this.comboTaken += 1;
-        else this.comboTaken = 1;
-        this.comboTakenTimer = 0.45;
-        this.vx = knockDir * 300;
-        this.vy = launchY * Math.pow(0.85, this.comboTaken - 1); // juggles decay out
-        this.hitstun = clamp(0.12 + damage * 0.008, 0.12, 0.30);
-        this.invuln = 0.12; this.flash = 0.14;
-        this.pose = "hit"; this.poseTimer = 0.18;
-        this.onGround = false;
       }
-      this.health = Math.max(0, this.health - damage);
-      this.ghostHold = 0.55;
-      this.gainMeter(original * (blocked ? 0.55 : 0.78));
-      return [true, blocked, justGuard];
-    }
-
-    worldHoriz(dir) {
-      if (dir === "left") return -1;
-      if (dir === "right") return 1;
-      return this.facing;
-    }
-    setPose(pose, dir, dur = 0.16) { this.pose = pose; this.poseDir = dir; this.poseTimer = dur; }
-    buffProjectiles(list) {
-      if (this.speedBuffTimer <= 0 || this.buffShots <= 0) return list;
-      for (const p of list) { p.vx *= 1.16; p.vy *= 1.16; p.damage += 2; p.glow = this.bp.accent2; }
-      this.buffShots -= 1;
-      return list;
-    }
-    packet(label, dir, count, xSpeed, ySpeeds, damage, shape, opts = {}) {
-      const dx = this.worldHoriz(dir);
-      let ox = this.cx + dx * 44, oy = this.cy - 24;
-      if (dir === "up") oy -= 18;
-      else if (dir === "down") oy += 40;
-      const out = [];
-      const active = ySpeeds.slice(0, count);
-      for (let i = 0; i < active.length; i++) {
-        out.push(new Projectile({
-          owner: this.uid, label,
-          x: ox, y: oy + i * 10 - (active.length - 1) * 5,
-          vx: dx * xSpeed, vy: active[i],
-          damage, color: this.bp.accent, glow: this.bp.accent2, shape,
-          behavior: opts.behavior || "linear",
-          radius: opts.radius ?? 18, width: opts.width ?? 44, height: opts.height ?? 22,
-          waveAmp: opts.waveAmp ?? 0, waveSpeed: opts.waveSpeed ?? 0,
-          gravity: opts.gravity ?? 0, floorLock: opts.floorLock ?? null,
-          returnDelay: opts.returnDelay ?? 0, anchorOwner: this.uid,
-          life: opts.life ?? 1.8,
-          knockbackY: dir !== "up" ? -225 : -290,
-        }));
+      if (m.connected && this.moveFrame === m.startup + 16) {
+        const o2 = this.opp;
+        o2.x = this.x + 60 * this.facing;
+        applyHit(this, o2, { dmg: m.dmg, knockback: 420, launch: -520, isThrow: true });
+        shake(0.45);
       }
-      return this.buffProjectiles(out);
-    }
-    spawnOrbit(label, shape = "orb", count = 2, damage = 6, duration = 3.8) {
-      const out = [];
-      for (let i = 0; i < count; i++) {
-        out.push(new Projectile({
-          owner: this.uid, label, x: this.cx, y: this.cy, vx: 0, vy: 0,
-          damage, color: this.bp.accent, glow: this.bp.accent2, shape,
-          behavior: "orbit", radius: shape === "orb" ? 16 : 18, width: 46, height: 24,
-          life: duration, anchorOwner: this.uid,
-          orbitRadius: 80 + i * 20, orbitSpeed: i % 2 === 0 ? 220 : -220, orbitAngle: 90 * i,
-          knockbackY: -180,
-        }));
-      }
-      return this.buffProjectiles(out);
-    }
-    spawnRain(label, shape, xPoints, damage, colorSwap = false) {
-      const out = [];
-      for (let i = 0; i < xPoints.length; i++) {
-        out.push(new Projectile({
-          owner: this.uid, label,
-          x: xPoints[i], y: -40 - i * 28, vx: 0, vy: 720 + i * 20,
-          damage,
-          color: colorSwap ? this.bp.accent2 : this.bp.accent,
-          glow: colorSwap ? this.bp.accent : this.bp.accent2,
-          shape, width: shape === "beam" ? 34 : 54, height: shape === "beam" ? 132 : 28,
-          life: 1.9, knockbackY: -250,
-        }));
-      }
-      return this.buffProjectiles(out);
-    }
-    buffSelf(shots = 2, duration = 1.5) {
-      this.speedBuffTimer = Math.max(this.speedBuffTimer, duration);
-      this.buffShots = Math.max(this.buffShots, shots);
-    }
-    upAntiAir(label, shape = "beam", damage = 10) {
-      return this.buffProjectiles([new Projectile({
-        owner: this.uid, label, x: this.cx, y: this.cy - 52, vx: 0, vy: -620,
-        damage, color: this.bp.accent, glow: this.bp.accent2, shape,
-        width: shape === "beam" ? 36 : 52, height: shape === "beam" ? 110 : 30,
-        radius: 18, life: 1.2, knockbackY: -310,
-      })]);
-    }
-    groundLine(label, dir, shape = "beam", damage = 9, xSpeed = 620) {
-      const dx = this.worldHoriz(dir);
-      return this.buffProjectiles([new Projectile({
-        owner: this.uid, label, x: this.cx + dx * 48, y: this.cy + 58,
-        vx: dx * xSpeed, vy: 0,
-        damage, color: this.bp.accent, glow: this.bp.accent2, shape,
-        behavior: "ground_wave",
-        width: shape === "beam" ? 106 : 84, height: shape === "beam" ? 20 : 24,
-        floorLock: FLOOR - 52, waveAmp: 8, waveSpeed: 10, life: 1.3, knockbackY: -240,
-      })]);
-    }
-
-    useBasic(dir) {
-      if (this.basicCd > 0 || this.hitstun > 0 || this.guardActive) return null;
-      this.basicCd = 0.27;
-      const label = this.bp.basics[dir];
-      this.setPose("basic", dir);
-      const h = this.worldHoriz(dir);
-      let pr = [];
-      const k = this.bp.key;
-      if (k === "chen_ping_macro") {
-        if (dir === "neutral") pr = this.packet(label, dir, 2, 860, [-30, 30], 8, "card", { width: 52, height: 24 });
-        else if (dir === "up") pr = this.upAntiAir(label, "card", 10);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 8, 680);
-        else if (dir === "left") { this.vx -= 180; pr = this.packet(label, dir, 1, 560, [0], 8, "receipt", { width: 54, height: 26, behavior: "boomerang", returnDelay: 0.55, life: 2.1 }); }
-        else { this.vx += h * 140; pr = this.packet(label, dir, 1, 920, [0], 10, "beam", { width: 88, height: 16, life: 0.8 }); }
-      } else if (k === "chen_ping_lecture") {
-        if (dir === "neutral") pr = this.packet(label, dir, 3, 720, [-60, 0, 60], 6, "beam", { width: 62, height: 12, life: 1.25 });
-        else if (dir === "up") pr = this.upAntiAir(label, "beam", 10);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 10, 620);
-        else if (dir === "left") { this.vx -= 150; pr = this.packet(label, dir, 1, 480, [0], 8, "card", { width: 58, height: 28, behavior: "boomerang", returnDelay: 0.45, life: 1.8 }); }
-        else { this.vx += h * 130; pr = this.packet(label, dir, 1, 760, [0], 9, "beam", { width: 94, height: 18, life: 0.85 }); }
-      } else if (k === "zhang_weiwei_civil") {
-        if (dir === "neutral") pr = this.packet(label, dir, 1, 650, [0], 8, "orb", { radius: 16, behavior: "wave", waveAmp: 18, waveSpeed: 8.8, life: 2.2 });
-        else if (dir === "up") pr = this.upAntiAir(label, "orb", 9);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 8, 560);
-        else if (dir === "left") { this.reflectTimer = 0.45; pr = this.packet(label, dir, 1, 500, [0], 7, "orb", { radius: 15, behavior: "boomerang", returnDelay: 0.55, life: 2.1 }); }
-        else pr = this.packet(label, dir, 1, 760, [0], 10, "beam", { width: 84, height: 16, life: 0.9 });
-      } else if (k === "zhang_weiwei_studio") {
-        if (dir === "neutral") pr = this.packet(label, dir, 1, 560, [0], 9, "mic", { width: 58, height: 40, behavior: "boomerang", returnDelay: 0.44, life: 2.0 });
-        else if (dir === "up") pr = this.upAntiAir(label, "beam", 10);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 8, 520);
-        else if (dir === "left") { this.vx -= 120; pr = this.packet(label, dir, 1, 420, [0], 8, "mic", { width: 58, height: 40, behavior: "boomerang", returnDelay: 0.70, life: 2.4 }); }
-        else { this.vx += h * 80; pr = this.packet(label, dir, 1, 720, [0], 9, "beam", { width: 80, height: 16, life: 0.9 }); }
-      } else if (k === "lao_a_execute") {
-        if (dir === "neutral") pr = this.packet(label, dir, 1, 820, [0], 9, "receipt", { width: 62, height: 28, life: 1.4 });
-        else if (dir === "up") pr = this.upAntiAir(label, "blade", 11);
-        else if (dir === "down") pr = this.groundLine(label, dir, "blade", 10, 700);
-        else if (dir === "left") { this.vx -= 170; pr = this.packet(label, dir, 1, 480, [0], 8, "receipt", { width: 56, height: 26, behavior: "boomerang", returnDelay: 0.48, life: 1.8 }); }
-        else { this.vx += h * 220; pr = this.packet(label, dir, 1, 940, [-40], 11, "blade", { width: 90, height: 26, gravity: 650, life: 1.0 }); }
-      } else if (k === "lao_a_budget") {
-        if (dir === "neutral") pr = this.packet(label, dir, 1, 600, [0], 8, "receipt", { width: 58, height: 28, behavior: "boomerang", returnDelay: 0.58, life: 2.2 });
-        else if (dir === "up") pr = this.upAntiAir(label, "receipt", 9);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 8, 580);
-        else if (dir === "left") pr = this.spawnOrbit(label, "receipt", 2, 5, 2.6);
-        else { this.vx += h * 110; pr = this.packet(label, dir, 2, 700, [-40, 40], 8, "receipt", { width: 54, height: 26, life: 1.5 }); }
-      } else if (k === "fengge_dongbei") {
-        if (dir === "neutral") pr = this.packet(label, dir, 1, 760, [0], 10, "beam", { width: 96, height: 18, life: 0.9 });
-        else if (dir === "up") pr = this.upAntiAir(label, "beam", 11);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 9, 680);
-        else if (dir === "left") { this.vx -= 160; pr = this.packet(label, dir, 1, 520, [0], 8, "card", { width: 52, height: 24, behavior: "boomerang", returnDelay: 0.46, life: 1.9 }); }
-        else { this.vx += h * 190; pr = this.packet(label, dir, 1, 900, [0], 11, "blade", { width: 88, height: 24, life: 0.85 }); }
-      } else if (k === "hu_chenfeng_reviewer") {
-        if (dir === "neutral") pr = this.packet(label, dir, 2, 720, [-30, 30], 8, "card", { width: 58, height: 30, life: 1.6 });
-        else if (dir === "up") pr = this.upAntiAir(label, "card", 9);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 8, 560);
-        else if (dir === "left") { this.vx -= 130; pr = this.packet(label, dir, 1, 520, [0], 8, "card", { width: 58, height: 30, behavior: "boomerang", returnDelay: 0.52, life: 2.0 }); }
-        else pr = this.packet(label, dir, 1, 860, [0], 9, "beam", { width: 88, height: 16, life: 0.9 });
-      } else {
-        if (dir === "neutral") pr = this.packet(label, dir, 1, 700, [0], 9, "beam", { width: 90, height: 18, life: 1.0 });
-        else if (dir === "up") pr = this.upAntiAir(label, "beam", 10);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 8, 560);
-        else if (dir === "left") { this.vx -= 120; pr = this.packet(label, dir, 1, 520, [0], 7, "receipt", { width: 54, height: 26, behavior: "boomerang", returnDelay: 0.54, life: 2.0 }); }
-        else { this.vx += h * 120; pr = this.packet(label, dir, 1, 820, [0], 10, "beam", { width: 88, height: 16, life: 0.9 }); }
-      }
-      AU.shoot();
-      return { label, projectiles: pr, color: this.bp.accent2, forceKillLine: false };
-    }
-
-    useSkill(dir) {
-      if (this.skillCd > 0 || this.hitstun > 0 || this.guardActive) return null;
-      this.skillCd = 0.96;
-      const label = this.bp.skills[dir];
-      this.setPose("skill", dir, 0.22);
-      const h = this.worldHoriz(dir);
-      let pr = [];
-      let forceKillLine = false;
-      const k = this.bp.key;
-      if (k === "chen_ping_macro") {
-        if (dir === "neutral") pr = this.packet(label, dir, 4, 700, [-160, -50, 50, 160], 8, "receipt", { width: 56, height: 28, life: 1.7 });
-        else if (dir === "up") pr = this.spawnRain(label, "beam", [320, 540, 760, 980, 1200], 9);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 12, 780);
-        else if (dir === "left") { this.buffSelf(3, 1.8); this.vx -= 200; }
-        else { this.vx += h * 240; pr = this.packet(label, dir, 2, 900, [-50, 50], 10, "card", { width: 60, height: 28, life: 1.1 }); }
-      } else if (k === "chen_ping_lecture") {
-        if (dir === "neutral") pr = this.packet(label, dir, 1, 680, [0], 14, "beam", { width: 122, height: 20, behavior: "ground_wave", floorLock: FLOOR - 62, waveAmp: 8, waveSpeed: 10, life: 1.35 });
-        else if (dir === "up") pr = this.spawnRain(label, "beam", [260, 520, 780, 1040, 1300], 10);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 13, 820);
-        else if (dir === "left") { this.reflectTimer = 1.1; this.guardHeat = Math.max(0, this.guardHeat - 30); AU.reflect(); }
-        else { this.vx += h * 190; pr = this.packet(label, dir, 1, 780, [-120], 12, "blade", { width: 94, height: 26, gravity: 920, life: 1.2 }); }
-      } else if (k === "zhang_weiwei_civil") {
-        if (dir === "neutral") pr = this.packet(label, dir, 3, 560, [-80, 0, 80], 7, "orb", { radius: 18, behavior: "wave", waveAmp: 24, waveSpeed: 8.6, life: 2.3 });
-        else if (dir === "up") pr = this.spawnRain(label, "orb", [320, 560, 800, 1040, 1280], 9, true);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 10, 600);
-        else if (dir === "left") { this.reflectTimer = 1.0; this.guardHeat = Math.max(0, this.guardHeat - 20); AU.reflect(); }
-        else pr = this.packet(label, dir, 2, 760, [-20, 20], 10, "orb", { radius: 20, behavior: "wave", waveAmp: 12, waveSpeed: 10, life: 1.9 });
-      } else if (k === "zhang_weiwei_studio") {
-        if (dir === "neutral") {
-          pr = [-160, 0, 160].map(off => new Projectile({
-            owner: this.uid, label, x: this.cx + off, y: 42, vx: 0, vy: 740,
-            damage: 9, color: this.bp.accent, glow: this.bp.accent2,
-            shape: "beam", width: 32, height: 128, life: 1.7, knockbackY: -240,
-          }));
-        }
-        else if (dir === "up") pr = this.spawnRain(label, "beam", [260, 490, 720, 950, 1180], 10);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 11, 540);
-        else if (dir === "left") pr = this.spawnOrbit(label, "mic", 2, 7, 3.5);
-        else { this.vx += h * 150; pr = this.packet(label, dir, 2, 720, [-50, 50], 9, "mic", { width: 58, height: 40, life: 1.5 }); }
-      } else if (k === "lao_a_execute") {
-        if (dir === "neutral") pr = this.packet(label, dir, 3, 740, [0, 0, 0], 10, "blade", { width: 94, height: 24, behavior: "ground_wave", floorLock: FLOOR - 56, waveAmp: 10, waveSpeed: 10.5, life: 1.2 });
-        else if (dir === "up") pr = this.spawnRain(label, "blade", [260, 500, 740, 980, 1220], 12);
-        else if (dir === "down") { pr = this.groundLine(label, dir, "blade", 12, 780); forceKillLine = true; }
-        else if (dir === "left") { this.buffSelf(3, 1.6); this.dashCd = 0; }
-        else { this.vx += h * 260; pr = this.packet(label, dir, 1, 920, [-260], 13, "blade", { width: 92, height: 28, gravity: 1150, life: 1.15 }); }
-      } else if (k === "lao_a_budget") {
-        if (dir === "neutral") pr = this.packet(label, dir, 4, 640, [-180, -60, 60, 180], 7, "receipt", { width: 54, height: 26, life: 1.7 });
-        else if (dir === "up") pr = this.spawnRain(label, "receipt", [300, 560, 820, 1080, 1340], 9, true);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 11, 620);
-        else if (dir === "left") pr = this.spawnOrbit(label, "receipt", 3, 6, 3.8);
-        else { this.vx += h * 160; pr = this.packet(label, dir, 2, 760, [-90, 90], 10, "receipt", { width: 58, height: 28, life: 1.4 }); }
-      } else if (k === "fengge_dongbei") {
-        if (dir === "neutral") pr = this.packet(label, dir, 2, 760, [-30, 30], 10, "beam", { width: 110, height: 18, life: 1.0 });
-        else if (dir === "up") pr = this.spawnRain(label, "beam", [280, 500, 720, 940, 1160], 10);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 12, 720);
-        else if (dir === "left") { this.buffSelf(2, 1.5); this.vx -= 180; }
-        else { this.vx += h * 250; pr = this.packet(label, dir, 2, 880, [-40, 40], 11, "blade", { width: 92, height: 26, life: 1.05 }); }
-      } else if (k === "hu_chenfeng_reviewer") {
-        if (dir === "neutral") pr = this.packet(label, dir, 3, 700, [-80, 0, 80], 8, "card", { width: 60, height: 30, life: 1.8 });
-        else if (dir === "up") pr = this.spawnRain(label, "card", [320, 580, 840, 1100], 9);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 10, 600);
-        else if (dir === "left") { this.reflectTimer = 0.9; this.buffSelf(2, 1.3); AU.reflect(); }
-        else { this.vx += h * 150; pr = this.packet(label, dir, 2, 820, [-40, 40], 10, "card", { width: 62, height: 32, life: 1.3 }); }
-      } else {
-        if (dir === "neutral") pr = this.packet(label, dir, 3, 690, [-60, 0, 60], 8, "receipt", { width: 56, height: 28, life: 1.8 });
-        else if (dir === "up") pr = this.spawnRain(label, "beam", [320, 580, 840, 1100], 10);
-        else if (dir === "down") pr = this.groundLine(label, dir, "beam", 10, 620);
-        else if (dir === "left") { this.reflectTimer = 0.8; this.vx -= 120; AU.reflect(); }
-        else { this.vx += h * 160; pr = this.packet(label, dir, 2, 800, [-40, 40], 10, "beam", { width: 88, height: 16, life: 1.2 }); }
-      }
-      AU.skill();
-      return { label, projectiles: this.buffProjectiles(pr), color: this.bp.accent2, forceKillLine };
-    }
-
-    useUltimate() {
-      if (this.hitstun > 0 || this.guardActive || this.meter < S.maxMeter) return null;
-      this.meter = 0;
-      const label = this.bp.ult;
-      this.setPose("ultimate", "neutral", 0.4);
-      let pr = [];
-      let forceKillLine = false;
-      const k = this.bp.key;
-      if (k === "chen_ping_macro" || k === "chen_ping_lecture") {
-        const shape = k === "chen_ping_macro" ? "receipt" : "beam";
-        pr = this.spawnRain(label, shape, [220, 420, 620, 820, 1020, 1220], 12, k === "chen_ping_macro");
-      } else if (k === "zhang_weiwei_civil" || k === "zhang_weiwei_studio") {
-        const shape = k === "zhang_weiwei_civil" ? "orb" : "mic";
-        pr = this.packet(label, "neutral", 6, 600, [-220, -120, -40, 40, 120, 220], 10, shape, {
-          radius: 22, width: 60, height: 40,
-          behavior: shape === "orb" ? "wave" : "linear", waveAmp: 26, waveSpeed: 10, life: 2.4,
-        });
-      } else if (k === "lao_a_execute") {
-        pr = this.packet(label, "neutral", 4, 760, [0, 0, 0, 0], 13, "blade", { width: 96, height: 26, behavior: "ground_wave", floorLock: FLOOR - 54, waveAmp: 10, waveSpeed: 11, life: 1.5 });
-        forceKillLine = true;
-      } else if (k === "lao_a_budget") {
-        pr = this.spawnOrbit(label, "receipt", 4, 7, 5.0);
-      } else if (k === "fengge_dongbei") {
-        pr = this.spawnRain(label, "beam", [240, 430, 620, 810, 1000, 1190], 11);
-      } else if (k === "hu_chenfeng_reviewer") {
-        pr = this.packet(label, "neutral", 6, 720, [-160, -96, -32, 32, 96, 160], 9, "card", { width: 62, height: 32, life: 2.0 });
-      } else {
-        pr = this.spawnRain(label, "beam", [260, 500, 740, 980, 1220], 11, true);
-      }
-      AU.ult();
-      return { label, projectiles: pr, color: this.bp.accent2, forceKillLine, isUlt: true };
-    }
-
-    update(dt, arenaW) {
-      this.anim += dt;
-      this.basicCd = Math.max(0, this.basicCd - dt);
-      this.skillCd = Math.max(0, this.skillCd - dt);
-      this.dashCd = Math.max(0, this.dashCd - dt);
-      this.hitstun = Math.max(0, this.hitstun - dt);
-      this.invuln = Math.max(0, this.invuln - dt);
-      this.flash = Math.max(0, this.flash - dt);
-      this.reflectTimer = Math.max(0, this.reflectTimer - dt);
-      this.speedBuffTimer = Math.max(0, this.speedBuffTimer - dt);
-      this.guardBreakTimer = Math.max(0, this.guardBreakTimer - dt);
-      this.poseTimer = Math.max(0, this.poseTimer - dt);
-      this.coyote = Math.max(0, this.coyote - dt);
-      this.comboTimer = Math.max(0, this.comboTimer - dt);
-      this.comboPop = Math.max(0, this.comboPop - dt);
-      if (this.comboTimer <= 0) this.combo = 0;
-
-      // ghost health bar drain
-      this.ghostHold = Math.max(0, this.ghostHold - dt);
-      if (this.ghostHold <= 0 && this.displayedHealth > this.health) {
-        this.displayedHealth = Math.max(this.health, this.displayedHealth - S.maxHealth * 1.4 * dt);
-      }
-
-      // squash & stretch ease back to 1
-      this.squashX += (1 - this.squashX) * Math.min(1, dt * 14);
-      this.squashY += (1 - this.squashY) * Math.min(1, dt * 14);
-
-      this.comboTakenTimer = Math.max(0, this.comboTakenTimer - dt);
-      this.guardActive = this.guardRequested && this.guardBreakTimer <= 0 &&
-        this.hitstun <= 0 && this.dashTimer <= 0 && this.onGround;
-      this.guardActiveTime = this.guardActive ? this.guardActiveTime + dt : 0;
-      // heat cools at full rate when open, half rate while holding guard
-      this.guardHeat = Math.max(0, this.guardHeat - S.guardCoolRate * (this.guardActive ? 0.5 : 1) * dt);
-
-      this.skidCd = Math.max(0, this.skidCd - dt);
-      if (this.dashTimer > 0) {
-        this.dashTimer = Math.max(0, this.dashTimer - dt);
-        this.x += this.dashDir * this.dashSpeedCur * dt;
-        this.runVel = this.dashDir * this.dashSpeedCur * 0.42; // keep momentum out of the dash
-        this.afterimages.push({ x: this.x, y: this.y, facing: this.facing, life: 0.18 });
-      } else {
-        // acceleration/friction locomotion instead of instant velocity
-        let speed = this.guardActive ? S.guardSpeed : (this.onGround ? S.moveSpeed : S.airSpeed);
-        if (this.speedBuffTimer > 0) speed *= 1.14;
-        const axis = this.hitstun > 0 ? 0 : this.moveAxis;
-        const target = axis * speed;
-        const accel = axis !== 0
-          ? (this.onGround ? 4200 : 2300)   // drive
-          : (this.onGround ? 3400 : 700);   // friction (weak in air = drift)
-        if (this.runVel < target) this.runVel = Math.min(target, this.runVel + accel * dt);
-        else if (this.runVel > target) this.runVel = Math.max(target, this.runVel - accel * dt);
-        // turn-around skid dust
-        if (this.onGround && axis !== 0 && axis * this.runVel < 0 && Math.abs(this.runVel) > 260 && this.skidCd <= 0) {
-          dustPuff(this.cx, this.y + this.h - 4, -Math.sign(this.runVel), 5);
-          this.skidCd = 0.3;
-        }
-        this.x += this.runVel * dt;
-      }
-
-      this.x += this.vx * dt;
-      this.vx *= Math.pow(0.84, dt * 60);
-      if (Math.abs(this.vx) < 18) this.vx = 0;
-
-      const grav = S.gravity * (this.fastFall && !this.onGround && this.vy > 0 ? 1.5 : 1);
-      this.vy += grav * dt;
-      this.y += this.vy * dt;
-
-      const groundY = FLOOR - this.h;
-      const wasAir = !this.onGround;
-      if (this.y >= groundY) {
-        this.y = groundY;
-        this.vy = 0;
-        if (wasAir) {
-          this.airDashesLeft = 1;
-          this.jumpsUsed = 0;
-          this.squashX = 1.22; this.squashY = 0.78;
-          dustPuff(this.cx, this.y + this.h, 0, 5);
-          AU.land();
-        }
-        this.onGround = true;
-      } else {
-        if (this.onGround) this.coyote = 0.085;
-        this.onGround = false;
-      }
-
-      this.x = clamp(this.x, S.stageMargin, arenaW - S.stageMargin - this.w);
-
-      for (let i = this.afterimages.length - 1; i >= 0; i--) {
-        this.afterimages[i].life -= dt;
-        if (this.afterimages[i].life <= 0) this.afterimages.splice(i, 1);
-      }
-      if (this.afterimages.length > 8) this.afterimages.splice(0, this.afterimages.length - 8);
-
-      if (this.poseTimer <= 0 && this.hitstun <= 0) {
-        if (this.guardActive) this.pose = "guard";
-        else if (!this.onGround) this.pose = "jump";
-        else if (Math.abs(this.moveAxis) > 0.1) this.pose = "run";
-        else this.pose = "idle";
+      if (this.moveFrame >= m.startup + m.active + m.recovery + 14) {
+        this.move = null;
+        this.setState("idle");
       }
     }
-    faceTarget(tx) {
-      if (this.dashTimer <= 0) this.facing = tx >= this.cx ? 1 : -1;
-    }
 
-    // ---------- chibi rendering ----------
-    // ---- cel-shaded full-body skeleton rendering ----
-    limbJoint(x1, y1, x2, y2, segLen, bendDir) {
-      // knee/elbow position for a 2-segment limb (simple IK)
-      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-      const dx = x2 - x1, dy = y2 - y1;
-      const d = Math.hypot(dx, dy) || 1;
-      const off = Math.sqrt(Math.max(segLen * segLen - (d / 2) * (d / 2), 6));
-      return [mx + (-dy / d) * off * bendDir, my + (dx / d) * off * bendDir];
-    }
-    drawLimb(ctx, x1, y1, jx, jy, x2, y2, color, w) {
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.strokeStyle = "rgb(16,18,28)";
-      ctx.lineWidth = w + 4.5;
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(jx, jy); ctx.lineTo(x2, y2); ctx.stroke();
-      ctx.strokeStyle = rgb(color);
-      ctx.lineWidth = w;
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(jx, jy); ctx.lineTo(x2, y2); ctx.stroke();
-    }
-    drawBody(ctx, vib) {
-      const bp = this.bp, of = bp.outfit, f = this.facing;
-      const cx = this.cx, bottom = this.y + this.h;
-      const pose = this.pose, t = this.anim;
-      const white = this.flash > 0;
-      const mixW = (c) => white ? [c[0] + (255 - c[0]) * 0.5, c[1] + (255 - c[1]) * 0.5, c[2] + (255 - c[2]) * 0.5] : c;
-      const shade = (c, k) => [clamp(c[0] * k, 0, 255) | 0, clamp(c[1] * k, 0, 255) | 0, clamp(c[2] * k, 0, 255) | 0];
-      const JACKET = mixW(of.jacket), SHIRT = mixW(of.shirt), PANTS = mixW(of.pants), SHOES = mixW(of.shoes);
-      const SKIN = mixW([231, 192, 156]);
-      const bareArms = of.style === "tee" || of.style === "polo";
-      const SLEEVE = bareArms ? SKIN : JACKET;
-
-      // skeleton geometry
-      const headR = 38, thighL = 26, shinL = 26, torsoH = 58;
-      const shW = 19, hipW = 11;
-      const running = pose === "run";
-      const runPhase = Math.sin(t * 13);
-      const attacking = pose === "basic" || pose === "skill" || pose === "ultimate";
-      const punchT = attacking ? clamp(this.poseTimer / 0.16, 0, 1) : 0;
-      const breathe = Math.sin(t * 2.4);
-
-      let lean = 0;
-      if (running) lean = this.moveAxis * 0.13;
-      else if (pose === "dash") lean = this.dashDir * 0.32;
-      else if (pose === "jump") lean = this.vx * 0.0003;
-      else if (attacking) lean = ({ left: -0.16, right: 0.16, up: -0.08, down: 0.1 }[this.poseDir] ?? f * 0.1);
-      else if (pose === "hit") lean = -f * 0.18;
-
-      const crouch = this.guardActive ? 13 : (pose === "hit" ? 5 : 0);
-      const hipY = -(thighL + shinL - 7) + crouch - (running ? Math.abs(runPhase) * 2.5 : 0);
-      const shoulderY = hipY - torsoH + 8;
-
-      // ankle targets per pose
-      let aF, aB; // [x, y] front / back ankle
-      if (!this.onGround && pose !== "dash") {
-        if (this.vy < 0) { aF = [f * 15, -22]; aB = [-f * 3, -14]; }      // rising tuck
-        else { aF = [f * 9, -8]; aB = [-f * 13, -2]; }                     // falling
-      } else if (running) {
-        const lift = (p) => -Math.max(0, Math.cos(p)) * 11;
-        aF = [Math.sin(t * 13) * 21, lift(t * 13)];
-        aB = [Math.sin(t * 13 + Math.PI) * 21, lift(t * 13 + Math.PI)];
-      } else if (pose === "dash") { aF = [this.dashDir * 27, 0]; aB = [-this.dashDir * 22, -3]; }
-      else if (this.guardActive) { aF = [f * 17, 0]; aB = [-f * 16, 0]; }
-      else if (pose === "hit") { aF = [-f * 13, -4]; aB = [-f * 2, 0]; }
-      else if (attacking) { aF = [f * 19, 0]; aB = [-f * 15, 0]; }
-      else { aF = [f * 12, 0]; aB = [-f * 10, 0]; } // idle stance
-
-      // hand targets per pose
-      const dirUp = this.poseDir === "up" ? -34 : this.poseDir === "down" ? 22 : 0;
-      let hF, hB, bendF = -f, bendB = f; // elbows point backward by default
-      if (attacking) {
-        if (pose === "ultimate") { hF = [f * 13, shoulderY - 34]; hB = [-f * 13, shoulderY - 34]; bendF = f; bendB = -f; }
-        else if (pose === "skill") { hF = [f * 31, shoulderY - 4 + dirUp * 0.5]; hB = [f * 17, shoulderY + 8]; }
-        else { hF = [f * (30 + (1 - punchT) * 9), shoulderY + 5 + dirUp]; hB = [-f * 15, shoulderY + 12]; }
-      } else if (this.guardActive) { hF = [f * 16, shoulderY + 15]; hB = [f * 8, shoulderY + 21]; bendF = f; }
-      else if (pose === "hit") { hF = [-f * 17, shoulderY - 6]; hB = [-f * 9, shoulderY - 12]; }
-      else if (!this.onGround) { hF = [f * 17, shoulderY + 12]; hB = [-f * 17, shoulderY + 15]; }
-      else if (running) {
-        hF = [f * 5 - runPhase * 17, shoulderY + 23];
-        hB = [-f * 5 + runPhase * 17, shoulderY + 24];
-      } else { hF = [f * 13, shoulderY + 29 + breathe]; hB = [-f * 13, shoulderY + 29 + breathe]; }
-
-      const shF = [f * 10, shoulderY], shB = [-f * 10, shoulderY + 1];
-      const hipF = [f * 5, hipY], hipB = [-f * 5, hipY];
-
-      ctx.save();
-      ctx.translate(cx + vib.x, bottom + vib.y);
-      ctx.scale(this.squashX, this.squashY);
-      ctx.rotate(lean);
-
-      const armSeg = 17, legBend = f;
-      const drawLeg = (hip, ankle) => {
-        const [kx, ky] = this.limbJoint(hip[0], hip[1], ankle[0], ankle[1], thighL, legBend);
-        this.drawLimb(ctx, hip[0], hip[1], kx, ky, ankle[0], ankle[1], PANTS, 12);
-        // shoe
-        ctx.fillStyle = "rgb(16,18,28)";
-        ctx.beginPath(); ctx.ellipse(ankle[0] + f * 6, ankle[1] + 2.5, 13, 6.5, 0, 0, TAU); ctx.fill();
-        ctx.fillStyle = rgb(SHOES);
-        ctx.beginPath(); ctx.ellipse(ankle[0] + f * 6, ankle[1] + 2, 11.5, 5, 0, 0, TAU); ctx.fill();
+    tryHit(m) {
+      const o = this.opp;
+      if (o.invuln > 0 || o.ko || o.hidden) return;
+      const reach = m.range * (S.charH / 335);
+      const box = {
+        x: this.facing === 1 ? this.x : this.x - reach - 30,
+        y: this.y - this.h * (m.antiAir ? 1.35 : 0.85),
+        w: reach + 30,
+        h: this.h * (m.antiAir ? 1.25 : 0.75),
       };
-      const drawArm = (sh, hand, bend, isFront) => {
-        const [ex, ey] = this.limbJoint(sh[0], sh[1], hand[0], hand[1], armSeg, bend);
-        this.drawLimb(ctx, sh[0], sh[1], ex, ey, hand[0], hand[1], SLEEVE, 10);
-        if (bareArms) { // short sleeve stub
-          ctx.strokeStyle = rgb(JACKET);
-          ctx.lineCap = "round";
-          ctx.lineWidth = 13;
-          ctx.beginPath(); ctx.moveTo(sh[0], sh[1]);
-          ctx.lineTo(sh[0] + (ex - sh[0]) * 0.35, sh[1] + (ey - sh[1]) * 0.35); ctx.stroke();
-        }
-        // hand
-        ctx.fillStyle = "rgb(16,18,28)";
-        ctx.beginPath(); ctx.arc(hand[0], hand[1], 8, 0, TAU); ctx.fill();
-        ctx.fillStyle = rgb(SKIN);
-        ctx.beginPath(); ctx.arc(hand[0], hand[1], 6.3, 0, TAU); ctx.fill();
-      };
-      const torsoPath = () => {
-        const topY = shoulderY - 8, botY = hipY + 7;
-        ctx.beginPath();
-        ctx.moveTo(-hipW - 2, botY);
-        ctx.lineTo(-shW, topY + 10);
-        ctx.quadraticCurveTo(-shW - 1, topY, -shW + 7, topY);
-        ctx.lineTo(shW - 7, topY);
-        ctx.quadraticCurveTo(shW + 1, topY, shW, topY + 10);
-        ctx.lineTo(hipW + 2, botY);
-        ctx.closePath();
-      };
-
-      // 1) rear arm + rear leg (behind torso)
-      drawArm(shB, hB, bendB, false);
-      drawLeg(hipB, aB);
-
-      // 2) hoodie hood (behind head/torso top)
-      if (of.style === "hoodie") {
-        ctx.fillStyle = rgb(shade(JACKET, 0.78));
-        ctx.beginPath(); ctx.ellipse(-f * 5, shoulderY - 12, 24, 16, 0, 0, TAU); ctx.fill();
-        ctx.strokeStyle = "rgb(16,18,28)";
-        ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.ellipse(-f * 5, shoulderY - 12, 24, 16, 0, 0, TAU); ctx.stroke();
-      }
-
-      // 3) torso with side shading
-      const grad = ctx.createLinearGradient(-shW, 0, shW, 0);
-      const litK = 1.08, darkK = 0.82;
-      grad.addColorStop(0, rgb(shade(JACKET, f > 0 ? darkK : litK)));
-      grad.addColorStop(1, rgb(shade(JACKET, f > 0 ? litK : darkK)));
-      torsoPath();
-      ctx.fillStyle = grad;
-      ctx.fill();
-      ctx.strokeStyle = "rgb(16,18,28)";
-      ctx.lineWidth = 3;
-      torsoPath();
-      ctx.stroke();
-
-      // 4) outfit details (clipped to torso)
-      ctx.save();
-      torsoPath();
-      ctx.clip();
-      const topY = shoulderY - 8;
-      if (of.style === "suit") {
-        // shirt V
-        ctx.fillStyle = rgb(SHIRT);
-        ctx.beginPath();
-        ctx.moveTo(-8, topY); ctx.lineTo(8, topY); ctx.lineTo(0, topY + 26); ctx.closePath(); ctx.fill();
-        // lapels
-        ctx.fillStyle = rgb(shade(JACKET, 0.86));
-        ctx.beginPath(); ctx.moveTo(-9, topY); ctx.lineTo(-2, topY + 16); ctx.lineTo(-13, topY + 14); ctx.closePath(); ctx.fill();
-        ctx.beginPath(); ctx.moveTo(9, topY); ctx.lineTo(2, topY + 16); ctx.lineTo(13, topY + 14); ctx.closePath(); ctx.fill();
-        // tie
-        if (of.tie) {
-          ctx.fillStyle = rgb(mixW(of.tie));
-          ctx.beginPath();
-          ctx.moveTo(-3, topY + 6); ctx.lineTo(3, topY + 6);
-          ctx.lineTo(4.5, topY + 32); ctx.lineTo(0, topY + 40); ctx.lineTo(-4.5, topY + 32);
-          ctx.closePath(); ctx.fill();
-        }
-        // buttons line
-        ctx.strokeStyle = "rgba(16,18,28,0.35)";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(0, topY + 28); ctx.lineTo(0, hipY + 4); ctx.stroke();
-      } else if (of.style === "hoodie") {
-        // kangaroo pocket + drawstrings + zip
-        ctx.strokeStyle = "rgba(16,18,28,0.5)";
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(0, topY + 4); ctx.lineTo(0, hipY + 4); ctx.stroke();
-        ctx.fillStyle = rgb(shade(JACKET, 0.85));
-        roundRect(ctx, -12, hipY - 16, 24, 16, 5); ctx.fill();
-        ctx.strokeStyle = "rgb(225,220,230)";
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(-5, topY + 2); ctx.lineTo(-6, topY + 14); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(5, topY + 2); ctx.lineTo(6, topY + 14); ctx.stroke();
-      } else if (of.style === "sweater") {
-        // shirt collar + stripes
-        ctx.fillStyle = rgb(SHIRT);
-        ctx.beginPath(); ctx.moveTo(-8, topY); ctx.lineTo(8, topY); ctx.lineTo(0, topY + 12); ctx.closePath(); ctx.fill();
-        ctx.fillStyle = rgb(mixW([238, 234, 222]));
-        for (let i = 0; i < 3; i++) {
-          ctx.fillRect(-shW, topY + 22 + i * 14, shW * 2, 5);
-        }
-      } else if (of.style === "polo") {
-        ctx.fillStyle = rgb(SHIRT);
-        ctx.beginPath(); ctx.moveTo(-9, topY); ctx.lineTo(-2, topY + 12); ctx.lineTo(-12, topY + 10); ctx.closePath(); ctx.fill();
-        ctx.beginPath(); ctx.moveTo(9, topY); ctx.lineTo(2, topY + 12); ctx.lineTo(12, topY + 10); ctx.closePath(); ctx.fill();
-        ctx.fillStyle = "rgba(16,18,28,0.6)";
-        ctx.beginPath(); ctx.arc(0, topY + 14, 1.6, 0, TAU); ctx.fill();
-        ctx.beginPath(); ctx.arc(0, topY + 21, 1.6, 0, TAU); ctx.fill();
-      } else { // tee
-        ctx.strokeStyle = "rgba(16,18,28,0.4)";
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(0, topY + 2, 8, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
-      }
-      ctx.restore();
-
-      // 5) front leg + front arm
-      drawLeg(hipF, aF);
-      // attack smear arc behind the striking hand
-      if (attacking && this.poseTimer > 0.05 && pose !== "ultimate") {
-        ctx.strokeStyle = rgb(bp.accent2, 0.4);
-        ctx.lineWidth = 9;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(f * 4, shoulderY + 14);
-        ctx.quadraticCurveTo(f * 26, shoulderY + dirUp - 10, hF[0], hF[1]);
-        ctx.stroke();
-      }
-      drawArm(shF, hF, bendF, true);
-
-      // 6) head
-      const bob = running ? Math.sin(t * 11) * 3 : breathe * 1.6;
-      const headCY = shoulderY - 8 - headR + 4 + bob * 0.5;
-      const img = this.head;
-      ctx.save();
-      ctx.translate(0, headCY);
-      ctx.rotate(lean * 0.35);
-      if (f < 0) ctx.scale(-1, 1);
-      if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, -headR, -headR, headR * 2, headR * 2);
-      else {
-        ctx.fillStyle = rgb(bp.accent);
-        ctx.beginPath(); ctx.arc(0, 0, headR, 0, TAU); ctx.fill();
-      }
-      if (white) {
-        ctx.globalAlpha = 0.45;
-        ctx.fillStyle = "#fff";
-        ctx.beginPath(); ctx.arc(0, 0, headR, 0, TAU); ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-      ctx.restore();
-
-      // 7) signature hand prop at the front hand
-      this.drawProp(ctx, hF[0], hF[1]);
-
-      ctx.restore();
-    }
-    drawProp(ctx, hx, hy) {
-      const k = this.bp.key;
-      const f = this.facing;
-      ctx.lineCap = "round";
-      if (k === "chen_ping_macro" || k === "chen_ping_lecture") {
-        // chalk stick
-        ctx.strokeStyle = "rgb(245,242,232)";
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.moveTo(hx, hy);
-        ctx.lineTo(hx + f * 14, hy - 10);
-        ctx.stroke();
-      } else if (k === "zhang_weiwei_civil" || k === "zhang_weiwei_studio") {
-        // panel mic
-        ctx.strokeStyle = "rgb(30,32,46)";
-        ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx + f * 10, hy - 14); ctx.stroke();
-        ctx.fillStyle = rgb(this.bp.accent);
-        ctx.beginPath(); ctx.arc(hx + f * 12, hy - 17, 5.5, 0, TAU); ctx.fill();
-      } else if (k === "lao_a_budget") {
-        // glowing execution sickle
-        ctx.strokeStyle = "rgba(255,93,161,0.9)";
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.arc(hx + f * 10, hy - 6, 16, f > 0 ? -1.4 : 2.4, f > 0 ? 0.9 : 4.6);
-        ctx.stroke();
-        ctx.strokeStyle = "rgb(80,60,96)";
-        ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.moveTo(hx, hy + 8); ctx.lineTo(hx, hy - 8); ctx.stroke();
-      } else if (k === "lao_a_execute") {
-        // rolled-up poster
-        ctx.strokeStyle = "rgb(235,225,210)";
-        ctx.lineWidth = 7;
-        ctx.beginPath(); ctx.moveTo(hx - f * 4, hy + 4); ctx.lineTo(hx + f * 16, hy - 14); ctx.stroke();
-        ctx.strokeStyle = "rgb(215,68,51)";
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(hx + f * 2, hy - 2); ctx.lineTo(hx + f * 12, hy - 11); ctx.stroke();
-      } else if (k === "fengge_dongbei") {
-        // selfie stick + phone
-        ctx.strokeStyle = "rgb(40,42,56)";
-        ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx + f * 26, hy - 26); ctx.stroke();
-        ctx.fillStyle = "rgb(20,22,34)";
-        ctx.save();
-        ctx.translate(hx + f * 30, hy - 32);
-        ctx.rotate(f * 0.5);
-        ctx.fillRect(-7, -12, 14, 24);
-        ctx.fillStyle = "rgba(150,210,255,0.8)";
-        ctx.fillRect(-5, -10, 10, 20);
-        ctx.restore();
-      } else if (k === "hu_chenfeng_reviewer") {
-        // phone held out to scan
-        ctx.fillStyle = "rgb(22,24,36)";
-        ctx.save();
-        ctx.translate(hx + f * 6, hy - 6);
-        ctx.rotate(f * 0.18);
-        ctx.fillRect(-8, -15, 16, 30);
-        ctx.fillStyle = "rgb(120,230,160)";
-        ctx.fillRect(-6, -13, 12, 26);
-        ctx.restore();
-      } else if (k === "hu_xijin_editor") {
-        // rolled newspaper
-        ctx.strokeStyle = "rgb(228,222,206)";
-        ctx.lineWidth = 8;
-        ctx.beginPath(); ctx.moveTo(hx - f * 2, hy + 6); ctx.lineTo(hx + f * 16, hy - 10); ctx.stroke();
-        ctx.strokeStyle = "rgb(140,134,120)";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(hx + f * 2, hy); ctx.lineTo(hx + f * 13, hy - 8); ctx.stroke();
+      if (m.air) { box.y = this.y - this.h * 0.6; box.h = this.h * 0.7; }
+      if (overlap(box, o.hurtRect())) {
+        this.moveHit = true;
+        resolveHit(this, o, m);
+      } else if (this.moveFrame === m.startup + m.active) {
+        AU.sfx("whiff");
       }
     }
-    draw(ctx, game) {
-      // afterimages: slim speed-ghost silhouettes
-      for (const a of this.afterimages) {
-        const alpha = (a.life / 0.18) * 0.16;
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = rgb(this.bp.accent2);
-        const gx = a.x + this.w / 2;
-        ctx.beginPath();
-        ctx.arc(gx, a.y + 44, 26, 0, TAU);
-        ctx.fill();
-        roundRect(ctx, gx - 18, a.y + 74, 36, this.h - 92, 16);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-      // shadow
-      const airH = clamp((FLOOR - (this.y + this.h)) / 240, 0, 1);
-      ctx.fillStyle = `rgba(6,8,17,${0.5 - airH * 0.3})`;
-      ctx.beginPath();
-      ctx.ellipse(this.cx, FLOOR - 6, (this.w * 0.62) * (1 - airH * 0.3), 13 * (1 - airH * 0.3), 0, 0, TAU);
-      ctx.fill();
 
-      // hit vibration during hitstop
-      const vib = { x: 0, y: 0 };
-      if (game.hitstop > 0 && this.hitstun > 0) {
-        if (this.onGround) vib.x = rand(-2.5, 2.5);
-        else vib.y = rand(-2.5, 2.5);
-      }
-      this.drawBody(ctx, vib);
+    updateUlt(dt) {
+      const u = this.ultScript;
+      if (!u) { this.setState("idle"); return; }
+      u.t++;
+      u.tick(this, u.t, dt);
+      if (u.t >= u.dur) { this.ultScript = null; this.setState("idle"); }
+    }
 
-      // guard / reflect halos
-      if (this.guardActive) {
-        ctx.strokeStyle = rgb(this.bp.accent2, 0.5);
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.ellipse(this.cx, this.cy, this.w * 0.72, this.h * 0.6, 0, 0, TAU);
-        ctx.stroke();
-      }
-      if (this.guardBreakTimer > 0) {
-        strokedText(ctx, "破防!", this.cx, this.y - 36, font(20, true), "rgb(255,140,140)", 4);
-      }
-      if (this.reflectTimer > 0) {
-        ctx.strokeStyle = rgb(this.bp.accent2, 0.66);
-        ctx.lineWidth = 4 + Math.sin(this.anim * 18) * 2;
-        ctx.beginPath();
-        ctx.ellipse(this.cx, this.cy, this.w * 0.8, this.h * 0.66, 0, 0, TAU);
-        ctx.stroke();
-      }
+    // ---- damage intake ----
+    enterKO() {
+      if (this.ko) return;
+      this.ko = true;
+      this.ultScript = null; this.hidden = false; this.banCard = false;
+      this.setState("ko");
+      this.vx = 0; this.vy = 0; this.y = FLOOR;
+      Game.onKO(this);
+    }
 
-      // name tag / ult ready
-      const ready = this.meter >= S.maxMeter;
-      const tag = ready ? "ULT READY" : this.bp.title;
-      const pulse = ready ? 0.7 + Math.abs(Math.sin(this.anim * 6)) * 0.3 : 1;
-      ctx.globalAlpha = pulse;
-      strokedText(ctx, tag, this.cx, this.y - 14, font(13, true), ready ? rgb(this.bp.accent2) : "rgb(248,245,237)", 3);
-      ctx.globalAlpha = 1;
+    endCombo() {
+      const c = this.combo;
+      if (c.hits >= 3) {
+        // combo rank banner on the attacker's side
+      }
+      c.hits = 0; c.dmg = 0;
+      this.opp.victimCombo = 0;
+      this.opp.juggleLift = 1;
     }
   }
 
-  // ---------- backdrop ----------
-  class Backdrop {
-    constructor() {
-      this.canvas = document.createElement("canvas");
-      this.canvas.width = W; this.canvas.height = H;
-      this.theme = D.stages[0];
-      this.bubbles = [];
-      this.setTheme(this.theme);
+  function frameCooldowns(cds) { for (const k of Object.keys(cds)) if (cds[k] > 0) cds[k]--; }
+
+  // ---------- combat resolution ----------
+  function resolveHit(atk, def, m) {
+    // guarding?
+    const defGuarding = (def.state === "guard" || def.state === "guardstun" ||
+                         ((def.state === "idle" || def.state === "walk") && def.holdingGuard())) &&
+                        !m.isThrow && !def.airborne;
+    if (defGuarding) {
+      const just = def.backHeld > 0 && def.backHeld <= S.justGuardWindow;
+      if (just) {
+        AU.sfx("just_guard");
+        FX.guardSpark(def.x + 40 * def.facing * -1, def.y - def.h * 0.55, true);
+        floatText(def.x, def.y - def.h - 26, "极限招架!", "#9fe8ff", 26);
+        // 马保国 trait: 接化发 counter
+        const ct = def.data.kit.counter;
+        if (ct && def.cds.counter <= 0 && !atk.airborne && !m.proj) {
+          def.cds.counter = ct.cd;
+          doJieHuaFa(def, atk, ct);
+          return;
+        }
+        def.setState("guardstun"); def.blockstun = 6;
+        return;
+      }
+      const chip = m.dmg * (m.ult ? S.ultChipRatio : S.chipRatio);
+      def.hp = Math.max(m.ult ? 1 : 1, def.hp - chip); // chip never KOs
+      def.guardGauge -= m.dmg * S.guardGaugeRatio;
+      def.setState("guardstun"); def.blockstun = 10 + (m.kind === "heavy" ? 8 : 0);
+      def.vx = (m.knockback || 200) * 0.6 * atk.facing;
+      atk.meter = clamp(atk.meter + m.dmg * S.meterOnBlockDealt, 0, S.maxMeter);
+      if (m.kind === "light") atk.chainOK = true;
+      AU.sfx("guard");
+      FX.guardSpark(def.x - 30 * def.facing, def.y - def.h * 0.55, false);
+      hitstop = Math.max(hitstop, 3);
+      if (def.guardGauge <= 0) {
+        def.guardGauge = 0;
+        def.setState("crumple");
+        floatText(def.x, def.y - def.h - 30, "破防!", "#ff8484", 34);
+        AU.sfx("guard_break");
+        shake(0.5);
+      }
+      return;
     }
-    setTheme(theme) {
-      this.theme = theme;
-      this.bubbles = [];
-      for (let i = 0; i < 10; i++) {
-        this.bubbles.push({
-          x: rand(100, W - 280), y: rand(120, FLOOR - 220),
-          speed: rand(12, 28), phase: rand(0, TAU),
-          label: theme.keywords[i % theme.keywords.length],
-          width: rand(150, 215),
+    applyHit(atk, def, m);
+  }
+
+  function applyHit(atk, def, m) {
+    // hyper-armor during ult cinematics / boss golden armor: damage lands, no interruption
+    if (def.state === "ult" || def.armorT > 0) {
+      const armDmg = Math.max(1, Math.round(m.dmg * 0.6));
+      def.hp -= armDmg;
+      floatText(def.x, def.y - def.h - 24, String(armDmg), "#bbb", 24);
+      FX.hitSpark(def.x, def.y - def.h * 0.6, false);
+      AU.sfx("guard");
+      if (def.hp <= 0) def.enterKO();
+      return;
+    }
+    def.victimCombo++;
+    if (m.kind === "light") atk.chainOK = true;
+    const scale = Math.max(S.comboScaleFloor, 1 - S.comboScaleStep * (def.victimCombo - 1));
+    const dmg = Math.max(1, Math.round(m.dmg * scale));
+    def.hp -= dmg;
+    atk.meter = clamp(atk.meter + dmg * S.meterOnHit, 0, S.maxMeter);
+    def.meter = clamp(def.meter + dmg * S.meterOnTaken, 0, S.maxMeter);
+
+    // combo bookkeeping (attacker side)
+    atk.combo.hits++; atk.combo.dmg += dmg; atk.combo.timer = 60;
+    const rank = D.RANKS.find(r => atk.combo.hits >= r[0]);
+    if (rank && atk.combo.hits === rank[0]) {
+      floatText(atk.x, atk.y - atk.h - 66, rank[1], atk.data.accent2 || "#ffd76a", 36);
+    }
+
+    // knock physics
+    const big = m.kind === "heavy" || m.ult || m.isThrow;
+    const kb = (m.knockback || 180) * (0.8 + 0.05 * def.victimCombo);
+    if ((m.launch && m.launch < -250) || def.airborne || m.isThrow || m.spike) {
+      def.airborne = true;
+      def.vy = (m.launch || -420) * def.juggleLift * (m.spike && def.airborne ? -1 : 1);
+      if (m.spike) def.vy = Math.abs(m.launch || 500);
+      def.vx = kb * atk.facing;
+      def.juggleLift *= S.juggleLift;
+      def.setState("launched");
+    } else {
+      def.vx = kb * atk.facing;
+      def.setState("hitstun");
+      def.hitstun = 16 + (big ? 8 : 0);
+      // lights pull the attacker forward so chains stay in range
+      if (m.kind === "light" && !m.air && !m.proj && !atk.airborne) atk.x += 26 * atk.facing;
+    }
+
+    // cap: burst out of very long combos
+    if (def.victimCombo >= S.maxComboHits) {
+      def.invuln = 40;
+      def.victimCombo = 0;
+      def.juggleLift = 1;
+    }
+
+    // juice
+    hitstop = Math.max(hitstop, big ? 8 : 4);
+    shake(big ? 0.5 : 0.22);
+    const hx = (atk.x + def.x) / 2 + rand(-14, 14), hy = def.y - def.h * rand(0.45, 0.72);
+    FX.hitSpark(hx, hy, big);
+    floatText(def.x + rand(-20, 20), def.y - def.h - 24, String(dmg), big ? "#ffd76a" : "#fff", big ? 36 : 27);
+    AU.sfx(m.ult ? "hit_heavy" : big ? (m.launch < -400 ? "hit_launch" : "hit_heavy") : "hit_light");
+    if (m.tag) floatText(def.x, def.y - def.h - 60, m.tag, "#c4f2d6", 26);
+    if (Math.random() < 0.25) say(def, pick(def.data.quotes.hurt || []));
+
+    if (def.hp <= 0 && !def.airborne) def.enterKO();
+    else if (def.hp <= 0 && def.airborne) { /* KO on land in launched handler */ }
+  }
+
+  function doJieHuaFa(def, atk, ct) {
+    say(def, ct.lines[0]);
+    AU.sfx("counter");
+    hitstop = 16;
+    shake(0.6);
+    // scripted slam
+    atk.setState("grabbed");
+    def.move = {
+      kind: "none", pose: "cast", startup: 6, active: 2, recovery: 26,
+      script(f, fr) {
+        if (fr === 8) {
+          atk.x = f.x + 70 * f.facing;
+          applyHit(f, atk, { dmg: ct.dmg, knockback: 520, launch: -560, isThrow: true });
+          say(f, ct.lines[1]);
+        }
+      },
+    };
+    def.moveFrame = 0; def.moveHit = false;
+    def.setState("special");
+  }
+
+  // ---------- specials ----------
+  const SPECIALS = {
+    dumpling(f, spec) {
+      f.move = {
+        kind: "none", pose: "cast", startup: 12, active: 2, recovery: 16,
+        script(ff, fr) { if (fr === 12) spawnProj(ff, spec.proj, 80, 0.62); },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+    texas_hop(f, spec) {
+      say(f, spec.castLine);
+      f.move = {
+        kind: "none", pose: "jump", startup: 4, active: 2, recovery: 34, selfMove: true,
+        script(ff, fr, dt) {
+          if (fr === 4) { ff.vy = -640; ff.vx = -420 * ff.facing; ff.y -= 2; }
+          if (fr > 4 && fr < 34) {
+            ff.vy += S.gravity * dt; ff.x += ff.vx * dt; ff.y += ff.vy * dt;
+            if (fr === 16) spawnProj(ff, D.fighters.chen.kit.s1.proj, 40, 0.5);
+            if (ff.y >= FLOOR) { ff.y = FLOOR; ff.vy = 0; ff.vx = 0; }
+          }
+          if (fr === 34) { ff.y = FLOOR; ff.vy = 0; ff.vx = 0; FX.dust(ff.x, FLOOR); }
+        },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+    shockwave(f, spec) {
+      f.move = {
+        kind: "none", pose: "cast", startup: 14, active: 2, recovery: 18,
+        script(ff, fr) { if (fr === 14) { const p = spawnProj(ff, spec.proj, 90, 0.55); if (p) p.wave = true; } },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+    confidence(f, spec) {
+      f.reflectT = spec.startup + spec.active;
+      f.move = {
+        kind: "none", pose: "channel", startup: spec.startup, active: spec.active, recovery: spec.recovery,
+        script() {},
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+      FX.aura(f.x, f.y - f.h * 0.5, "#a9d7ff");
+    },
+    frisbee(f, spec) {
+      if (fields.some(fl => fl.owner === f)) { f.cds.s1 = 20; return; }   // locked by S2
+      f.move = {
+        kind: "none", pose: "cast", startup: 12, active: 2, recovery: 16,
+        script(ff, fr) { if (fr === 12) spawnProj(ff, spec.proj, 80, 0.6); },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+    complexity(f, spec) {
+      if (projectiles.some(p => p.owner === f && p.boomerang && !p.dead)) { f.cds.s2 = 20; return; }
+      say(f, spec.castLine);
+      f.move = {
+        kind: "none", pose: "channel", startup: 16, active: 2, recovery: 18,
+        script(ff, fr) {
+          if (fr === 16) {
+            fields.push({ owner: ff, x: ff.opp.x, w: 260, t: spec.slowSecs * 60,
+                          mul: spec.slowMul, color: "#f6d69c" });
+            AU.sfx("slow_field");
+          }
+        },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+    rant_cone(f, spec) {
+      let hits = 0;
+      f.move = {
+        kind: "none", pose: "cast", startup: 8, active: 2, recovery: 18,
+        script(ff, fr) {
+          if (fr >= 8 && fr <= 26 && fr % 7 === 1 && hits < spec.hits) {
+            hits++;
+            const o = ff.opp;
+            const inRange = Math.abs(o.x - ff.x) < spec.range && Math.sign(o.x - ff.x || 1) === ff.facing;
+            burst(ff.x + 90 * ff.facing, ff.y - ff.h * 0.6, 4, () => ({
+              x: ff.x + rand(60, 150) * ff.facing, y: ff.y - ff.h * rand(0.4, 0.8),
+              vx: 320 * ff.facing, vy: rand(-60, 60), life: 14, size: rand(6, 14),
+              color: "rgba(255,140,90,0.7)", type: "ring",
+            }));
+            if (inRange && !o.invuln && !o.ko)
+              resolveHit(ff, o, { dmg: spec.dmg, kind: hits === 3 ? "heavy" : "light",
+                                  knockback: hits === 3 ? 380 : 60, launch: hits === 3 ? -320 : 0, range: spec.range });
+          }
+        },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+    outlaw_dash(f) {
+      AU.sfx("dash");
+      f.move = {
+        kind: "none", pose: "dash", startup: 2, active: 2, recovery: 12,
+        script(ff, fr, dt) {
+          if (fr >= 2 && fr <= 18) {
+            ff.x += 980 * ff.facing * dt;
+            ff.invuln = 2;
+            if (fr % 2 === 0) FX.afterimage(ff);
+          }
+        },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+    phone_review(f, spec) {
+      if (projectiles.some(p => p.owner === f && (p.sprite === "iphone" || p.sprite === "android") && !p.dead)) {
+        f.cds.s1 = 15; return;
+      }
+      f.phoneAlt = !f.phoneAlt;
+      const proj = f.phoneAlt ? spec.iphone : spec.android;
+      f.move = {
+        kind: "none", pose: "cast", startup: 11, active: 2, recovery: spec.recovery,
+        script(ff, fr) { if (fr === 11) { const p = spawnProj(ff, proj, 80, 0.6); if (p) p.tag = proj.tag; } },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+    reincarnate(f, spec) { doTeleport(f, spec, spec.cardLine, spec.doneLine, true); },
+    sneak_attack(f, spec) { doTeleport(f, spec, spec.cueLine, null, false); },
+    lightning_whip(f, spec) {
+      f.move = {
+        kind: "none", pose: "cast", startup: 10, active: 2, recovery: 14,
+        script(ff, fr) {
+          if (fr === 10) {
+            const p = spawnProj(ff, spec.proj, 90, 0.6);
+            if (p) p.bolt = true;
+          }
+        },
+      };
+      f.moveFrame = 0; f.moveHit = false; f.setState("special");
+    },
+  };
+
+  function doTeleport(f, spec, cueLine, doneLine, banCard) {
+    say(f, cueLine);
+    AU.sfx("teleport");
+    f.move = {
+      kind: "none", pose: "channel", startup: 8, active: 2, recovery: 25,
+      script(ff, fr) {
+        if (fr === 8) { ff.hidden = true; ff.invuln = 18; ff.banCard = banCard; }
+        if (fr === 23) {
+          const o = ff.opp;
+          // reappear behind the opponent (the side their back faces)
+          ff.x = clamp(o.x - 185 * o.facing, S.wallPad + 60, S.stageW - S.wallPad - 60);
+          ff.hidden = false; ff.banCard = false;
+          ff.facing = ff.x <= o.x ? 1 : -1;
+          FX.afterimage(ff);
+          if (doneLine) floatText(ff.x, ff.y - ff.h - 40, doneLine, "#c4f2d6", 26);
+        }
+      },
+    };
+    f.moveFrame = 0; f.moveHit = false; f.setState("special");
+  }
+
+  // ---------- ults ----------
+  const ULTS = {
+    inequality_beam: {
+      dur: 62,
+      tick(f, t) {
+        const o = f.opp;
+        if (t === 1) f.ultPose = "channel";
+        if (t === 10) f.ultPose = "cast";
+        if (t >= 12 && t <= 50 && t % 7 === 0) {
+          Game.ultBeam = { x: f.x, dir: f.facing, y: f.y - f.h * 0.55, t: 0, owner: f, text: "¥2000 > $3000" };
+          const reach = 950;
+          const inBeam = Math.sign(o.x - f.x || 1) === f.facing && Math.abs(o.x - f.x) < reach &&
+                         o.y > f.y - f.h * 1.2;
+          if (inBeam && o.invuln <= 0 && !o.ko)
+            resolveHit(f, o, { dmg: Math.round(f.ultScript.base / 6), kind: "light", ult: true, knockback: 120, launch: t > 40 ? -560 : 0, range: reach });
+        }
+        if (t === 52) Game.ultBeam = null;
+      },
+    },
+    danmaku_rain: {
+      dur: 95,
+      tick(f, t) {
+        if (t === 1) f.ultPose = "channel";
+        const texts = ["自信", "文明型国家", "震撼", "东升西降", "你要自信", "百国走访"];
+        if (t > 10 && t < 80 && t % 5 === 0) {
+          const o = f.opp;
+          const x = clamp(o.x + rand(-260, 260), 100, S.stageW - 100);
+          emit({ x, y: -40 + rand(-60, 0), vx: rand(-20, 20), vy: rand(560, 720), life: 90,
+                 type: "text", text: pick(texts), color: "#ffd76a", size: rand(26, 40) });
+          if (Math.abs(x - o.x) < 70 && o.y >= FLOOR - 40 && t % 10 === 0 && !o.invuln && !o.ko)
+            resolveHit(f, o, { dmg: Math.round(f.ultScript.base / 6), kind: "light", ult: true, knockback: 100, launch: t > 60 ? -520 : 0, range: 90 });
+        }
+        if (t < 80 && t % 6 === 0) FX.aura(f.x, f.y - f.h * 0.3, "#ffd76a");
+      },
+    },
+    kline_rain: {
+      dur: 90,
+      tick(f, t) {
+        if (t === 1) f.ultPose = "cast";
+        if (t > 8 && t < 72 && t % 6 === 0) {
+          const o = f.opp;
+          const x = clamp(o.x + rand(-220, 220), 100, S.stageW - 100);
+          emit({ x, y: -60, vx: 0, vy: rand(620, 820), life: 80, type: "kline",
+                 color: "#37c26a", size: rand(30, 54), vr: 0 });
+          if (Math.abs(x - o.x) < 60 && t % 12 === 2 && !o.invuln && !o.ko)
+            resolveHit(f, o, { dmg: Math.round(f.ultScript.base / 5), kind: "light", ult: true, knockback: 140, launch: t > 56 ? -540 : 0, range: 90 });
+        }
+      },
+    },
+    ranbu: {
+      dur: 120,
+      tick(f, t, dt) {
+        const o = f.opp;
+        if (t === 1) { f.ultPose = "dash"; f.ranbuHit = false; }
+        if (t < 26 && !f.ranbuHit) {
+          f.x += 1050 * f.facing * dt;
+          if (t % 2 === 0) FX.afterimage(f);
+          if (Math.abs(o.x - f.x) < 130 && !o.invuln && !o.ko) {
+            f.ranbuHit = true; f.ranbuT0 = t;
+            o.setState("ranbu_victim");
+            hitstop = 10;
+          }
+          if (t === 25 && !f.ranbuHit) { f.ultPose = "taunt"; }   // whiffed
+        }
+        if (f.ranbuHit) {
+          const rt = t - f.ranbuT0;
+          if (rt > 0 && rt < 64 && rt % 8 === 0) {
+            f.ultPose = pick(["jab", "sweep", "smash", "cast"]);
+            o.x = clamp(f.x + 110 * f.facing, S.wallPad + 60, S.stageW - S.wallPad - 60);
+            applyHit(f, o, { dmg: Math.round(f.ultScript.base * 6 / 54), kind: "light", ult: true, knockback: 30, launch: 0, range: 200 });
+            o.setState("ranbu_victim");
+          }
+          if (rt === 70) {
+            f.ultPose = "uppercut";
+            applyHit(f, o, { dmg: Math.round(f.ultScript.base * 12 / 54), kind: "heavy", ult: true, knockback: 420, launch: -820, range: 220 });
+            shake(0.7);
+          }
+        }
+      },
+    },
+    judgement_pillar: {
+      dur: 92,
+      tick(f, t) {
+        if (t === 1) { f.ultPose = "channel"; f.pillarX = f.opp.x; }
+        if (t === 20) {
+          Game.pillar = { x: f.pillarX, t: 0, owner: f };
+          AU.sfx("ult_flash");
+        }
+        if (t > 20 && t < 70) {
+          const o = f.opp;
+          if (Math.abs(o.x - f.pillarX) < 110 && t % 9 === 3 && !o.invuln && !o.ko)
+            resolveHit(f, o, { dmg: Math.round(f.ultScript.base / 6), kind: "light", ult: true, knockback: 60, launch: t > 55 ? -600 : 0, range: 130 });
+        }
+        if (t === 78) Game.pillar = null;
+      },
+    },
+    five_whips: {
+      dur: 110,
+      tick(f, t, dt) {
+        const o = f.opp;
+        if (t === 1) f.whipN = 0;
+        const steps = [14, 30, 46, 62, 82];
+        const idx = steps.indexOf(t);
+        if (idx >= 0) {
+          f.whipN = idx + 1;
+          f.ultPose = idx % 2 === 0 ? "cast" : "jab";
+          f.x += 85 * f.facing;
+          floatText(f.x + 60 * f.facing, f.y - f.h - 30, "鞭!", "#ffe9a8", 30 + idx * 3);
+          const reach = 260;
+          burst(f.x + 130 * f.facing, f.y - f.h * 0.6, 6, () => ({
+            x: f.x + rand(60, reach) * f.facing, y: f.y - f.h * rand(0.3, 0.9),
+            vx: rand(-60, 60), vy: rand(-60, 60), life: 12, size: rand(4, 10),
+            color: "#ffe9a8", type: "dot",
+          }));
+          if (Math.abs(o.x - f.x) < reach && Math.sign(o.x - f.x || 1) === f.facing && !o.invuln && !o.ko)
+            resolveHit(f, o, { dmg: Math.round(f.ultScript.base * (idx === 4 ? 14 : 8) / 46), kind: idx === 4 ? "heavy" : "light", ult: true,
+                               knockback: idx === 4 ? 460 : 120, launch: idx === 4 ? -760 : 0, range: reach });
+          AU.sfx(idx === 4 ? "hit_heavy" : "shoot");
+        }
+      },
+    },
+  };
+
+  // ---------- AI ----------
+  function aiThink(f, dt) {
+    const pad = f.pad, o = f.opp, cfg = f.data.ai, diff = Game.difficultyCfg();
+    pad.state = {};
+    if (Game.phase !== "fight" || f.busy() && f.state !== "jump") return;
+    const mem = f.aiMem;
+    mem.planT--;
+    const dist = Math.abs(o.x - f.x);
+    const fwd = o.x > f.x ? "right" : "left";
+    const back = o.x > f.x ? "left" : "right";
+    const mistake = Math.random() < diff.mistake * 0.02;
+    if (mistake) return;
+
+    // react to incoming projectiles
+    const threat = projectiles.find(p => p.owner === o && !p.dead &&
+      Math.sign(f.x - p.x) === Math.sign(p.vx || (o.x - f.x)) && Math.abs(p.x - f.x) < 320);
+    if (threat && Math.random() < diff.blockProb * 0.15) {
+      if (f.data.kit.s2 && f.data.kit.s2.id === "confidence" && f.cds.s2 <= 0 &&
+          Math.random() < (cfg.reflectProb || 0) * diff.reflectMul) { pad.tap("s2"); return; }
+      pad.state[back] = true;    // block/back off
+      f.guardIntent = true;
+      return;
+    }
+
+    // anti-air
+    if (o.airborne && dist < 260 && o.vy > -200) {
+      if (!mem.aaTimer) mem.aaTimer = diff.antiAirMs / (1000 / 60);
+      mem.aaTimer--;
+      if (mem.aaTimer <= 0) { pad.tap("heavy"); mem.aaTimer = 0; return; }
+    } else mem.aaTimer = 0;
+
+    // opponent attacking in range: block sometimes
+    if (o.state === "attack" && dist < 260 && Math.random() < diff.blockProb * 0.3) {
+      pad.state[back] = true; f.guardIntent = true; return;
+    }
+
+    // ult when ready
+    if (f.meter >= S.maxMeter && (dist < 300 || cfg.style === "zoner") && Math.random() < 0.03) {
+      pad.tap("ult"); return;
+    }
+
+    // boss counter gating: only counter-bait if player repeats buttons (handled via just-guard naturally)
+
+    // spacing plan
+    const want = cfg.prefRange;
+    const aggro = cfg.aggression * diff.aggression * 2;
+    if (mem.planT <= 0) {
+      mem.plan = Math.random() < aggro ? "engage" : (dist < want - 60 ? "retreat" : dist > want + 80 ? "approach" : "poke");
+      mem.planT = rand(18, 42) | 0;
+    }
+    if (mem.plan === "approach" || (mem.plan === "engage" && dist > 200)) {
+      pad.state[fwd] = true;
+      if (dist > 460 && Math.random() < 0.02 && f.cds.dash <= 0) pad.dtap(fwd);
+      if (cfg.style === "rushdown" && dist > 350 && f.cds.s2 <= 0 && Math.random() < 0.03) pad.tap("s2");
+    } else if (mem.plan === "retreat") {
+      pad.state[back] = true; f.guardIntent = false;
+    }
+
+    // projectile play
+    if (f.cds.s1 <= 0 && Math.random() < cfg.projFreq * 0.035 &&
+        (dist > 320 || cfg.style === "grappler" && dist > 220)) {
+      pad.tap("s1"); return;
+    }
+    // teleport when kept out
+    if ((cfg.style === "grappler" || cfg.style === "skirmisher") && f.cds.s2 <= 0 &&
+        dist > 480 && Math.random() < 0.02) { pad.tap("s2"); return; }
+    // slow field for pressure ai
+    if (cfg.style === "pressure" && f.cds.s2 <= 0 && dist < 500 && Math.random() < 0.015) { pad.tap("s2"); return; }
+    if (cfg.style === "zoner" && f.cds.s2 <= 0 && dist < 240 && Math.random() < 0.05) { pad.tap("s2"); return; }
+
+    // melee
+    if (dist < 190) {
+      const r = Math.random();
+      if (o.state === "guard" && r < 0.25) pad.tap("heavy");        // throw via proximity
+      else if (r < 0.55) pad.tap("light");
+      else if (r < 0.72) pad.tap("heavy");
+      else if (cfg.style === "grappler" && r < 0.8) pad.tap("heavy");
+    } else if (dist < 300 && Math.random() < 0.04) {
+      pad.state[fwd] = true;
+      if (Math.random() < 0.4) pad.tap("light");
+    }
+
+    // occasional jump-in
+    if (dist > 240 && dist < 480 && Math.random() < (cfg.style === "rushdown" ? 0.02 : 0.008)) {
+      pad.state[fwd] = true; pad.tap("up");
+      mem.jumpAtk = 14 + Math.random() * 10;
+    }
+    if (f.airborne && mem.jumpAtk != null && --mem.jumpAtk <= 0) { pad.tap("light"); mem.jumpAtk = null; }
+  }
+
+  // ---------- game orchestration ----------
+  const Game = {
+    scene: "boot",       // boot, title, select, vs, fight, results
+    phase: "intro",      // intro, fight, ko, roundend
+    mode: "arcade",      // arcade | versus
+    f1: null, f2: null,
+    stageKey: "studio",
+    round: 1, timer: S.roundTime, timerAcc: 0,
+    arcadeIdx: 0, arcadeOrder: [], perfectPending: false,
+    difficulty: +(localStorage.getItem("mf_diff") || 1),
+    selIdx: [0, 1], selDone: [false, false],
+    paused: false, showMoves: false,
+    ultBeam: null, pillar: null,
+    winner: null, matchWinner: null,
+    resultT: 0, vsT: 0, koTag: "",
+    loadProgress: 0, loadError: null,
+
+    difficultyCfg() { return D.difficulties[clamp(this.difficulty, 0, 2)]; },
+
+    // ---- scene: fight setup ----
+    startMatch(c1, c2, opts = {}) {
+      particles.length = 0; projectiles.length = 0; fields.length = 0;
+      floats.length = 0; bubbles.length = 0; banner = null;
+      this.ultBeam = null; this.pillar = null;
+      this.f1 = new Fighter(c1, 0, new Pad(KEYMAPS[0]), false);
+      this.f2 = new Fighter(c2, 1, this.mode === "versus" ? new Pad(KEYMAPS[1]) : new AIPad(), this.mode !== "versus");
+      if (opts.gold) {
+        this.f2.gold = true;
+        this.f2.maxHp = Math.round(this.f2.maxHp * D.arcade.boss.hpMul);
+        this.f2.hp = this.f2.maxHp;
+      }
+      this.stageKey = opts.stage || D.fighters[c2].stage || "studio";
+      this.round = 1;
+      this.scene = "fight";
+      this.startRound();
+      const keyShift = { studio: 0, lecture: 3, street: -2 }[this.stageKey] || 0;
+      AU.bgmStart(keyShift, 132, false);
+    },
+
+    startRound() {
+      const f1 = this.f1, f2 = this.f2;
+      projectiles.length = 0; fields.length = 0; bubbles.length = 0; floats.length = 0;
+      this.ultBeam = null; this.pillar = null; this.ultFlash = null;
+      const m1 = f1.meter, m2 = f2.meter, r1 = f1.rounds, r2 = f2.rounds;
+      f1.reset(S.stageW / 2 - 260, 1); f2.reset(S.stageW / 2 + 260, -1);
+      f1.meter = m1; f2.meter = m2; f1.rounds = r1; f2.rounds = r2;
+      f1.hp = f1.maxHp; f2.hp = f2.maxHp;
+      f1.meter = clamp(f1.meter, 0, S.maxMeter); // meter persists across rounds
+      this.phase = "intro"; this.phaseT = 0;
+      this.timer = S.roundTime; this.timerAcc = 0;
+      this.winner = null;
+      timeScale = 1; slowFrames = 0; hitstop = 0;
+      f1.setState("intro"); f2.setState("intro");
+      say(f1, pick(f1.data.quotes.intro));
+      if (this.f2.gold && this.round === 1) say(f2, D.arcade.boss.introLine);
+      else say(f2, pick(f2.data.quotes.intro));
+      showBanner(D.banners.round(this.round), null, 80);
+    },
+
+    startUltCinematic(f, u) {
+      AU.sfx("ult_flash");
+      hitstop = S.ultFreeze;
+      this.ultFlash = { f, t: S.ultFreeze, label: u.label };
+      say(f, u.line);
+      f.ultScript = Object.assign({ t: 0, base: u.dmg || 50 }, ULTS[u.id]);
+      f.ultPose = "channel";
+      f.vx = 0; f.vy = 0;
+      f.setState("ult");
+      shake(0.4);
+    },
+
+    onKO(loser) {
+      if (this.phase === "ko" || this.phase === "roundend") {
+        // double KO: the fighter we just crowned also died -> revoke, draw round
+        if (this.winner && this.winner === loser) {
+          this.winner.rounds--;
+          this.winner = null;
+          this.perfectPending = false;
+          this.koTag = "";
+          showBanner(D.banners.ko, D.banners.draw, 100, 150);
+        }
+        return;
+      }
+      const winner = loser === this.f1 ? this.f2 : this.f1;
+      this.phase = "ko"; this.phaseT = 0;
+      this.winner = winner;
+      winner.rounds++;
+      this.koTag = pick(D.KO_TAGS);
+      this.perfectPending = winner.hp >= winner.maxHp;
+      timeScale = S.koSlowmo; slowFrames = S.koSlowFrames;
+      AU.sfx("ko");
+      shake(1);
+      const sub = this.perfectPending
+        ? (loser.gold ? D.arcade.boss.perfectTag : D.banners.perfect)
+        : this.koTag;
+      showBanner(D.banners.ko, sub, 100, 150);
+      FX.confetti(winner.x, winner.y - winner.h);
+    },
+
+    endRoundByTimeout() {
+      const f1 = this.f1, f2 = this.f2;
+      const p1 = f1.hp / f1.maxHp, p2 = f2.hp / f2.maxHp;
+      const winner = p1 === p2 ? null : (p1 > p2 ? f1 : f2);
+      this.phase = "ko"; this.phaseT = 0;
+      this.winner = winner;
+      if (winner) winner.rounds++;
+      this.koTag = "";
+      timeScale = 0.6; slowFrames = 40;
+      showBanner(D.banners.timeout, winner ? null : D.banners.draw, 90, 110);
+    },
+
+    afterKO() {
+      const f1 = this.f1, f2 = this.f2;
+      if (this.winner && this.winner.rounds >= S.roundsToWin) {
+        this.matchWinner = this.winner;
+        this.scene = "results"; this.resultT = 0;
+        AU.bgmStop();
+        const q = this.winner === f1 || this.mode === "versus"
+          ? pick(this.winner.data.quotes.win)
+          : pick(this.winner.data.quotes.win);
+        this.resultQuote = q;
+        this.resultLoseQuote = pick((this.winner === f1 ? f2 : f1).data.quotes.lose);
+      } else {
+        this.round++;
+        this.startRound();
+        if (Math.max(f1.rounds, f2.rounds) === S.roundsToWin - 1) AU.bgmSetIntense(true);
+      }
+    },
+
+    // ---- arcade flow ----
+    beginArcade(chosen) {
+      this.mode = "arcade";
+      const pool = D.ROSTER.filter(k => k !== chosen && k !== D.arcade.boss.char);
+      // shuffle
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0; [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      this.arcadeOrder = pool.slice(0, D.arcade.matches);
+      this.arcadeOrder.push(D.arcade.boss.char);
+      this.arcadeIdx = 0;
+      this.playerChar = chosen;
+      this.nextArcadeMatch();
+    },
+    nextArcadeMatch() {
+      const oppKey = this.arcadeOrder[this.arcadeIdx];
+      const isBoss = this.arcadeIdx === this.arcadeOrder.length - 1;
+      this.vsData = { p1: this.playerChar, p2: oppKey, gold: isBoss };
+      this.scene = "vs"; this.vsT = 0;
+      AU.sfx("confirm");
+    },
+
+    // ---- input routing for UI scenes ----
+    onKey(code, e) {
+      if (this.scene === "fight") {
+        if (code === "KeyP" || code === "Escape") {
+          if (this.paused && code === "Escape") { this.quitToTitle(); return; }
+          this.paused = !this.paused; this.showMoves = false;
+          return;
+        }
+        if (this.paused) {
+          if (code === "KeyJ") this.showMoves = !this.showMoves;
+          if (code === "BracketLeft") AU.setVolume(AU.volume - 0.1);
+          if (code === "BracketRight") AU.setVolume(AU.volume + 0.1);
+          if (code === "KeyM") AU.setMuted(!AU.muted);
+          return;
+        }
+        return;
+      }
+      if (this.scene === "title") {
+        if (code === "KeyV") { this.mode = "versus"; this.scene = "select"; this.selDone = [false, false]; AU.sfx("confirm"); }
+        else if (code === "Digit1" || code === "Digit2" || code === "Digit3") {
+          this.difficulty = +code.slice(-1) - 1;
+          localStorage.setItem("mf_diff", this.difficulty);
+          AU.sfx("select");
+        } else { this.mode = "arcade"; this.scene = "select"; this.selDone = [false, false]; AU.sfx("confirm"); }
+        return;
+      }
+      if (this.scene === "select") { this.selectKey(code); return; }
+      if (this.scene === "vs") {
+        if (this.vsT > 30) this.launchVsMatch();
+        return;
+      }
+      if (this.scene === "results") {
+        if (this.resultT > 40) this.afterResults();
+        return;
+      }
+      if (this.scene === "ending") {
+        if (code === "Escape") this.quitToTitle();
+        return;
+      }
+    },
+
+    selectKey(code) {
+      const cols = 3;
+      const move = (idx, d) => {
+        this.selIdx[idx] = (this.selIdx[idx] + d + D.ROSTER.length) % D.ROSTER.length;
+        AU.sfx("select");
+      };
+      // P1
+      if (!this.selDone[0]) {
+        if (code === "KeyA") move(0, -1);
+        if (code === "KeyD") move(0, 1);
+        if (code === "KeyW") move(0, -cols);
+        if (code === "KeyS") move(0, cols);
+        if (code === "KeyJ" || code === "Enter") {
+          this.selDone[0] = true; AU.sfx("confirm");
+          if (this.mode === "arcade") { this.beginArcade(D.ROSTER[this.selIdx[0]]); return; }
+        }
+      }
+      if (this.mode === "versus" && !this.selDone[1]) {
+        if (code === "ArrowLeft") move(1, -1);
+        if (code === "ArrowRight") move(1, 1);
+        if (code === "ArrowUp") move(1, -cols);
+        if (code === "ArrowDown") move(1, cols);
+        if (code === "Comma" || code === "Enter" && this.selDone[0]) {
+          if (code === "Comma") { this.selDone[1] = true; AU.sfx("confirm"); }
+        }
+      }
+      if (code === "Escape") { this.scene = "title"; return; }
+      if (this.mode === "versus" && this.selDone[0] && this.selDone[1]) {
+        this.vsData = { p1: D.ROSTER[this.selIdx[0]], p2: D.ROSTER[this.selIdx[1]], gold: false };
+        this.scene = "vs"; this.vsT = 0;
+      }
+    },
+
+    launchVsMatch() {
+      const v = this.vsData;
+      this.startMatch(v.p1, v.p2, { gold: v.gold });
+    },
+
+    afterResults() {
+      if (this.mode === "arcade") {
+        if (this.matchWinner === this.f1) {
+          this.arcadeIdx++;
+          if (this.arcadeIdx >= this.arcadeOrder.length) { this.scene = "ending"; this.resultT = 0; return; }
+          this.nextArcadeMatch();
+        } else {
+          this.quitToTitle();
+        }
+      } else {
+        this.scene = "select"; this.selDone = [false, false];
+      }
+    },
+
+    quitToTitle() {
+      this.scene = "title"; this.paused = false;
+      AU.bgmStop();
+    },
+  };
+  window.Game = Game;
+  // debug/test handle (console playtesting)
+  Game._debug = { projectiles, particles, fields, get keys() { return keys; } };
+
+  // ---------- fixed-step update ----------
+  function fightUpdate(dt) {
+    const f1 = Game.f1, f2 = Game.f2;
+    frameNow++;
+
+    if (Game.paused) return;
+
+    if (hitstop > 0) {
+      hitstop--;
+      if (Game.ultFlash && --Game.ultFlash.t <= 0) Game.ultFlash = null;
+      updateParticles(dt * 0.3);
+      return;
+    }
+    if (Game.ultFlash) Game.ultFlash = null;   // freeze ended by any path
+
+    let sdt = dt;
+    if (slowFrames > 0) { slowFrames--; sdt = dt * timeScale; if (slowFrames === 0) timeScale = 1; }
+
+    // AI thinks at its own cadence
+    if (f2.isAI) aiThink(f2, sdt);
+
+    switch (Game.phase) {
+      case "intro": {
+        Game.phaseT++;
+        if (Game.phaseT === Math.round(S.introTime * 60 * 0.7)) showBanner(D.banners.fight, null, 40, 130);
+        if (Game.phaseT >= S.introTime * 60) {
+          Game.phase = "fight";
+          f1.setState("idle"); f2.setState("idle");
+          AU.sfx("round_go");
+        }
+        break;
+      }
+      case "fight": {
+        Game.timerAcc += sdt;
+        if (Game.timerAcc >= 1) {
+          Game.timerAcc -= 1; Game.timer--;
+          if (Game.timer <= 10 && Game.timer > 0) AU.sfx("timer");
+          if (Game.timer <= 0) Game.endRoundByTimeout();
+        }
+        break;
+      }
+      case "ko": {
+        Game.phaseT++;
+        if (Game.phaseT >= 110) { Game.phase = "roundend"; Game.phaseT = 0; }
+        break;
+      }
+      case "roundend": {
+        Game.phaseT++;
+        if (Game.phaseT >= 50) Game.afterKO();
+        break;
+      }
+    }
+
+    f1.update(sdt); f2.update(sdt);
+
+    // pushboxes
+    if (!f1.hidden && !f2.hidden && Math.abs(f1.x - f2.x) < (f1.w + f2.w) / 2 &&
+        Math.abs(f1.y - f2.y) < f1.h * 0.8) {
+      const push = ((f1.w + f2.w) / 2 - Math.abs(f1.x - f2.x)) / 2;
+      const dir = f1.x <= f2.x ? -1 : 1;
+      f1.x += push * dir; f2.x -= push * dir;
+    }
+
+    // projectiles
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      const p = projectiles[i];
+      p.update(sdt);
+      const target = p.owner === f1 ? f2 : f1;
+      // reflect
+      if (target.reflectT > 0 && p.tier === 1 && overlap(p.rect(), { x: target.x - 90, y: target.y - target.h, w: 180, h: target.h })) {
+        p.owner = target;
+        p.vx = -p.vx * 1.25;
+        p.startX = p.x; if (p.maxDist) p.maxDist = 600;
+        p.boomerang = null;
+        AU.sfx("reflect");
+        say(target, target.data.kit.s2.reflectLine);
+        continue;
+      }
+      if (!p.dead && !target.hidden && target.invuln <= 0 && !target.ko &&
+          overlap(p.rect(), target.hurtRect())) {
+        const retHit = p.boomerang && p.phase === "back";
+        const dmgMul = retHit ? (p.returnDmgMul || 1) : 1;
+        resolveHit(p.owner, target, {
+          dmg: p.dmg * dmgMul, kind: "light", proj: true,
+          knockback: retHit ? 120 : 220, launch: 0, range: 60, tag: p.tag,
         });
+        p.dead = true;
       }
-      this.prerender();
+      if (p.dead) projectiles.splice(i, 1);
     }
-    prerender() {
-      const ctx = this.canvas.getContext("2d");
-      const t = this.theme;
-      const grad = ctx.createLinearGradient(0, 0, 0, H);
-      grad.addColorStop(0, rgb(t.top));
-      grad.addColorStop(1, rgb(t.bottom));
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, W, H);
-      // grid
-      ctx.strokeStyle = "rgba(255,255,255,0.05)";
-      ctx.lineWidth = 1;
-      for (let x = 0; x < W; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-      for (let y = 48; y < FLOOR; y += 52) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-      // floor
-      ctx.fillStyle = rgb(t.floor);
-      ctx.fillRect(0, FLOOR, W, H - FLOOR);
-      ctx.fillStyle = "rgb(247,226,180)";
-      ctx.fillRect(0, FLOOR, W, 4);
-      // podiums
-      for (let i = 0; i < 2; i++) {
-        const x = i === 0 ? 180 : W - 340;
-        const color = i === 0 ? D.C.red : D.C.cyan;
-        ctx.fillStyle = "rgb(24,27,43)";
-        roundRect(ctx, x, FLOOR - 58, 148, 72, 20); ctx.fill();
-        ctx.fillStyle = rgb(color);
-        roundRect(ctx, x + 9, FLOOR - 44, 130, 44, 14); ctx.fill();
-        ctx.strokeStyle = "rgba(247,238,217,0.9)";
-        ctx.lineWidth = 2;
-        roundRect(ctx, x + 11, FLOOR - 42, 126, 40, 14); ctx.stroke();
+    // projectile clash
+    for (const a of projectiles) {
+      for (const b of projectiles) {
+        if (a === b || a.dead || b.dead || a.owner === b.owner) continue;
+        if (overlap(a.rect(), b.rect())) {
+          if (a.tier === b.tier) { a.dead = b.dead = true; FX.hitSpark((a.x + b.x) / 2, (a.y + b.y) / 2, false); AU.sfx("clash"); }
+          else if (a.tier > b.tier) b.dead = true;
+          else a.dead = true;
+        }
       }
-      // audience silhouettes
-      for (let i = 0; i < 22; i++) {
-        const x = 18 + i * 66;
-        const hh = 40 + (i % 4) * 10;
-        ctx.fillStyle = i % 2 === 0 ? "rgba(8,12,20,0.6)" : "rgba(18,22,35,0.66)";
-        ctx.beginPath(); ctx.arc(x, FLOOR + 92 - hh, 16 + (i % 3) * 2, 0, TAU); ctx.fill();
-        roundRect(ctx, x - 15, FLOOR + 104 - hh, 30, 44, 12); ctx.fill();
-      }
-      // theme prop strip
-      this.drawProp(ctx, t.prop);
     }
-    drawProp(ctx, prop) {
+    for (let i = projectiles.length - 1; i >= 0; i--) if (projectiles[i].dead) projectiles.splice(i, 1);
+
+    // slow fields
+    for (let i = fields.length - 1; i >= 0; i--) {
+      const fl = fields[i];
+      fl.t--;
+      const victim = fl.owner === f1 ? f2 : f1;
+      if (Math.abs(victim.x - fl.x) < fl.w / 2) { victim.slowT = 8; victim.slowMul = fl.mul; }
+      if (fl.t <= 0) fields.splice(i, 1);
+    }
+
+    // camera, fx
+    updateCamera(f1, f2, dt);
+    updateParticles(sdt);
+    for (let i = floats.length - 1; i >= 0; i--) {
+      const t = floats[i]; t.age++; t.y += t.vy * dt; t.vy *= 0.92;
+      if (t.age > t.life) floats.splice(i, 1);
+    }
+    for (let i = bubbles.length - 1; i >= 0; i--) if (++bubbles[i].age > bubbles[i].life) bubbles.splice(i, 1);
+    if (banner && ++banner.age > banner.life) banner = null;
+    if (Game.ultBeam && ++Game.ultBeam.t > 60) Game.ultBeam = null;
+    if (Game.pillar) Game.pillar.t++;
+  }
+
+  // ---------- rendering ----------
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+
+  function drawPose(f) {
+    if (f.hidden && !f.banCard) return;
+    const pd = poseData(f.charKey, f.pose());
+    const img = ASSETS.img[pd.f];
+    const sc = f.scale * cam.zoom;
+    const sx = w2sx(f.x), sy = w2sy(f.y);
+
+    ctx.save();
+    // shadow
+    if (!f.hidden) {
+      const shw = 120 * cam.zoom * (f.y < FLOOR ? Math.max(0.4, 1 - (FLOOR - f.y) / 500) : 1);
+      ctx.fillStyle = "rgba(0,0,0,0.33)";
+      ctx.beginPath();
+      ctx.ellipse(sx, w2sy(FLOOR) + 12 * cam.zoom, shw, 18 * cam.zoom, 0, 0, TAU);
+      ctx.fill();
+    }
+
+    ctx.translate(sx, sy);
+    // squash & lean juice
+    let squashX = 1, squashY = 1, rot = 0, dy = 0;
+    if (f.state === "walk") { dy = Math.sin(f.stateT * 0.32) * 3; }
+    if (f.state === "idle") { squashY = 1 + Math.sin(f.stateT * 0.08) * 0.012; }
+    if (f.state === "dash") rot = 0.06 * f.facing;
+    if (f.state === "backdash") rot = -0.05 * f.facing;
+    if (f.state === "hitstun") rot = -0.05 * f.facing;
+    if (f.state === "launched") rot = clamp(-f.vy / 2400, -0.6, 0.6) * -f.facing;
+    if (f.state === "ko") rot = -Math.PI / 2 * f.facing * Math.min(1, f.stateT / 20);
+    if (frameNow - f.lastLand < 8) { squashY = 0.94; squashX = 1.05; }
+    if (f.state === "jump" && f.vy < -300) { squashY = 1.06; squashX = 0.96; }
+
+    ctx.rotate(rot);
+    ctx.scale(f.facing * squashX, squashY);
+
+    if (f.gold) ctx.filter = "sepia(0.9) saturate(2.6) hue-rotate(-12deg) brightness(1.12)";
+    if (f.state === "hitstun" || f.state === "launched" || f.state === "ranbu_victim") {
+      if ((f.stateT / 2 | 0) % 2 === 0) ctx.filter = (ctx.filter === "none" ? "" : ctx.filter + " ") + "brightness(1.6) saturate(1.6)";
+    }
+    const dw = pd.w * sc, dh = pd.h * sc;
+    ctx.drawImage(img, -pd.ax * sc, -dh + (pd.h - pd.ay) * sc + dy, dw, dh);
+    ctx.filter = "none";
+    ctx.restore();
+
+    // ban card overlay (户晨风 teleport)
+    if (f.banCard) {
+      const bw = 240 * cam.zoom, bh = 110 * cam.zoom;
+      ctx.save();
+      ctx.translate(sx, sy - f.h * 0.6 * cam.zoom);
+      ctx.fillStyle = "rgba(20,22,30,0.92)";
+      roundRect(ctx, -bw / 2, -bh / 2, bw, bh, 12);
+      ctx.fill();
+      ctx.strokeStyle = "#e5534b"; ctx.lineWidth = 3; ctx.stroke();
+      ctx.fillStyle = "#e5534b";
+      ctx.font = font(26 * cam.zoom);
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("该账号已被封禁", 0, 0);
+      ctx.restore();
+    }
+
+    // reflect shield
+    if (f.reflectT > 0) {
       ctx.save();
       ctx.globalAlpha = 0.5;
-      if (prop === "blackboard") {
-        ctx.fillStyle = "rgb(26,52,40)";
-        roundRect(ctx, W / 2 - 290, 196, 580, 210, 14); ctx.fill();
-        ctx.strokeStyle = "rgba(247,238,217,0.6)";
-        ctx.lineWidth = 5;
-        roundRect(ctx, W / 2 - 290, 196, 580, 210, 14); ctx.stroke();
-        ctx.strokeStyle = "rgba(240,236,220,0.55)";
-        ctx.lineWidth = 3;
-        ctx.font = font(34, true);
-        ctx.fillStyle = "rgba(240,236,220,0.65)";
-        ctx.textAlign = "center";
-        ctx.fillText("¥2000 > $3000", W / 2, 260);
-        ctx.beginPath();
-        ctx.moveTo(W / 2 - 240, 330);
-        for (let i = 0; i <= 24; i++) {
-          const x = W / 2 - 240 + i * 20;
-          ctx.lineTo(x, 330 - Math.sin(i * 0.6) * 26 - i * 2);
-        }
-        ctx.stroke();
-      } else if (prop === "studio") {
-        for (let i = 0; i < 3; i++) {
-          const x = W / 2 + (i - 1) * 330;
-          ctx.fillStyle = "rgba(14,18,32,0.9)";
-          roundRect(ctx, x - 60, 150, 120, 76, 10); ctx.fill();
-          ctx.fillStyle = "rgba(88,160,255,0.32)";
-          roundRect(ctx, x - 52, 158, 104, 60, 7); ctx.fill();
-        }
-      } else if (prop === "phones") {
-        for (let i = 0; i < 5; i++) {
-          const x = 260 + i * 240;
-          ctx.fillStyle = "rgba(20,24,40,0.92)";
-          roundRect(ctx, x, 200 + (i % 2) * 36, 64, 120, 12); ctx.fill();
-          ctx.fillStyle = i % 2 ? "rgba(116,214,146,0.35)" : "rgba(170,200,255,0.3)";
-          roundRect(ctx, x + 6, 208 + (i % 2) * 36, 52, 96, 8); ctx.fill();
-        }
-      } else if (prop === "ticker") {
-        ctx.fillStyle = "rgba(34,18,23,0.85)";
-        ctx.fillRect(0, 180, W, 44);
-        ctx.fillRect(0, 250, W, 44);
-        ctx.font = font(26, true);
-        ctx.fillStyle = "rgba(246,214,156,0.5)";
-        ctx.textAlign = "left";
-        ctx.fillText("#热搜  #社评  #A股日记  #老胡锐评  #复杂的中国", 60, 209);
-        ctx.fillText("#连夜发文  #口风微调  #不装了  #回旋余地", 240, 279);
-      } else if (prop === "street") {
-        for (let i = 0; i < 6; i++) {
-          const x = 140 + i * 220;
-          const hh = 140 + (i % 3) * 60;
-          ctx.fillStyle = "rgba(18,16,26,0.9)";
-          ctx.fillRect(x, 420 - hh, 130, hh + 120);
-          ctx.fillStyle = "rgba(245,206,120,0.25)";
-          for (let wy = 0; wy < 4; wy++) {
-            for (let wx = 0; wx < 3; wx++) {
-              if ((i + wx + wy) % 3 === 0) ctx.fillRect(x + 14 + wx * 38, 436 - hh + wy * 46, 22, 28);
-            }
-          }
-        }
-        // 东百往事 graffiti
-        ctx.font = font(24, true);
-        ctx.textAlign = "left";
-        ctx.fillStyle = "rgba(245,206,120,0.5)";
-        ctx.save();
-        ctx.translate(200, 470); ctx.rotate(-0.05);
-        ctx.fillText("指定没有你好果汁吃", 0, 0);
-        ctx.restore();
-        ctx.save();
-        ctx.translate(880, 500); ctx.rotate(0.04);
-        ctx.fillStyle = "rgba(194,116,84,0.55)";
-        ctx.fillText("你太baby辣", 0, 0);
-        ctx.restore();
-      } else if (prop === "gallows") {
-        ctx.strokeStyle = "rgba(255,93,161,0.5)";
-        ctx.lineWidth = 10;
-        ctx.beginPath();
-        ctx.moveTo(W / 2 - 320, FLOOR - 20); ctx.lineTo(W / 2 - 320, 170);
-        ctx.lineTo(W / 2 + 320, 170); ctx.lineTo(W / 2 + 320, FLOOR - 20);
-        ctx.stroke();
-        ctx.setLineDash([18, 14]);
-        ctx.strokeStyle = "rgba(255,93,161,0.65)";
-        ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.moveTo(W / 2 - 320, 280); ctx.lineTo(W / 2 + 320, 280); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.font = font(30, true);
-        ctx.fillStyle = "rgba(255,200,228,0.55)";
-        ctx.textAlign = "center";
-        ctx.fillText("月末账单已生成", W / 2, 250);
-      }
-      ctx.restore();
-    }
-    update(dt) {
-      for (const b of this.bubbles) {
-        b.phase += dt * b.speed * 0.12;
-        b.y += Math.sin(b.phase) * dt * 10;
-      }
-    }
-    draw(ctx, pulse, showBanner) {
-      ctx.drawImage(this.canvas, 0, 0);
-      // pulsing stage lights
-      const lights = [D.C.red, D.C.cyan, D.C.gold, D.C.pink, D.C.purple];
-      for (let i = 0; i < lights.length; i++) {
-        const d = 140 + i * 45;
-        const a = 0.1 + Math.abs(Math.sin(pulse * 0.7 + i)) * 0.08;
-        let x = 130 + i * 260;
-        ctx.fillStyle = rgb(lights[i], a);
-        ctx.beginPath(); ctx.arc(Math.min(x, W - 160), 90 + (i % 2) * 26, d / 2, 0, TAU); ctx.fill();
-      }
-      // keyword bubbles
-      for (const b of this.bubbles) {
-        ctx.fillStyle = "rgba(245,245,255,0.1)";
-        roundRect(ctx, b.x, b.y, b.width, 38, 19); ctx.fill();
-        ctx.strokeStyle = "rgba(247,223,181,0.3)";
-        ctx.lineWidth = 1;
-        roundRect(ctx, b.x, b.y, b.width, 38, 19); ctx.stroke();
-        strokedText(ctx, b.label, b.x + b.width / 2, b.y + 20, font(15), "rgba(247,238,219,0.85)", 0);
-      }
-      if (!showBanner) return;
-      // stage banner (kept clear of the fight HUD)
-      const bx = W / 2 - 264;
-      ctx.fillStyle = "rgba(14,18,31,0.76)";
-      roundRect(ctx, bx, 156, 528, 78, 26); ctx.fill();
-      ctx.strokeStyle = "rgba(247,227,177,0.45)";
-      ctx.lineWidth = 2;
-      roundRect(ctx, bx, 156, 528, 78, 26); ctx.stroke();
-      strokedText(ctx, this.theme.name, W / 2, 186 + Math.sin(pulse * 2) * 2, font(26, true), "rgb(247,241,233)", 4);
-      strokedText(ctx, this.theme.subtitle, W / 2, 216, font(14), "rgb(177,188,210)", 0);
-    }
-  }
-
-  // ---------- announcer ----------
-  const announcer = { items: [] };
-  function announce(text, { sub = "", dur = 1.1, size = 92, color = [247, 241, 233] } = {}) {
-    announcer.items.push({ text, sub, age: 0, dur, size, color });
-    AU.announce();
-  }
-  function updateAnnouncer(dt) {
-    for (let i = announcer.items.length - 1; i >= 0; i--) {
-      announcer.items[i].age += dt;
-      if (announcer.items[i].age > announcer.items[i].dur) announcer.items.splice(i, 1);
-    }
-  }
-  function drawAnnouncer(ctx) {
-    for (const a of announcer.items) {
-      const tIn = clamp(a.age / 0.16, 0, 1);
-      const tOut = clamp((a.dur - a.age) / 0.25, 0, 1);
-      const scale = lerp(1.55, 1.0, 1 - Math.pow(1 - tIn, 3));
-      ctx.globalAlpha = Math.min(tIn, tOut);
-      strokedText(ctx, a.text, W / 2, H / 2 - 60, font(a.size * scale, true), rgb(a.color), 10);
-      if (a.sub) strokedText(ctx, a.sub, W / 2, H / 2 + 14, font(26, true), "rgb(220,226,240)", 5);
-      ctx.globalAlpha = 1;
-    }
-  }
-
-  // ---------- game ----------
-  class Game {
-    constructor(headImages) {
-      this.heads = headImages;
-      this.backdrop = new Backdrop();
-      this.killLine = new KillLine();
-      this.state = "title";
-      this.selected = 0;
-      this.difficulty = 1;
-      this.score = 0;
-      this.highScore = 0;
-      this.stats = { maxCombo: 0, damageDealt: 0, perfects: 0 };
-      this.koFlash = 0;
-      this.pauseMoves = false;
-      this.elapsed = 0;
-      this.hitstop = 0;
-      this.slowmo = 1;
-      this.slowmoTimer = 0;
-      this.paused = false;
-      this.banner = { timer: 0, text: "", sub: "" };
-      this.matchIntroTimer = 0;
-      this.freezeTimer = 0;
-      this.roundTime = S.roundTime;
-      this.playerRounds = 0;
-      this.opponentRounds = 0;
-      this.matchIndex = 0;
-      this.arcadeClears = 0;
-      this.campaignVictory = false;
-      this.campaignWinner = null;
-      this.stage = D.stages[0];
-      this.projectiles = [];
-      this.player = null;
-      this.opponent = null;
-      this.queue = [];
-      this.aiState = {};
-      this.playerAiState = {};
-      this.keys = { left: false, right: false, up: false, down: false, guard: false };
-      this.keys2 = { left: false, right: false, up: false, down: false, guard: false };
-      this.pendingJump = 0;
-      this.pendingJump2 = 0;
-      this.attackBuffer = null; // {button, time}
-      this.mode = "arcade"; // arcade | versus
-      this.menuPhase = 0;   // versus: 0 = P1 picking, 1 = P2 picking
-      this.selected2 = 2;
-      this.ticker = { index: 0, timer: 4.5, hold: 0, text: D.ticker[0] };
-      this.fightSignal = false;
-      this.autoplay = false;
-      this.wipe = 99; // screen transition timer
-      this.loadSettings();
-    }
-    loadSettings() {
-      try {
-        const s = JSON.parse(localStorage.getItem("meme_fighter_v1") || "{}");
-        if (typeof s.difficulty === "number") this.difficulty = clamp(s.difficulty, 0, 2);
-        if (typeof s.volume === "number") AU.setVolume(s.volume);
-        if (s.muted) AU.setMuted(true);
-        if (typeof s.highScore === "number") this.highScore = s.highScore;
-      } catch (err) { /* private mode etc. */ }
-    }
-    saveSettings() {
-      try {
-        localStorage.setItem("meme_fighter_v1", JSON.stringify({
-          difficulty: this.difficulty, volume: AU.volume, muted: AU.muted, highScore: this.highScore,
-        }));
-      } catch (err) { /* ignore */ }
-    }
-    addScore(source, pts) {
-      if (this.mode === "arcade" && source === this.player) this.score += pts;
-    }
-    bp(i) { return D.fighters[i]; }
-    bpByKey(key) { return D.fighters.find(f => f.key === key); }
-    setTicker(text, hold = 2.2) {
-      this.ticker.text = text; this.ticker.hold = hold; this.ticker.timer = 5;
-    }
-    cycleTicker(dt) {
-      if (this.ticker.hold > 0) { this.ticker.hold = Math.max(0, this.ticker.hold - dt); return; }
-      this.ticker.timer -= dt;
-      if (this.ticker.timer <= 0) {
-        this.ticker.index = (this.ticker.index + 1) % D.ticker.length;
-        this.ticker.text = D.ticker[this.ticker.index];
-        this.ticker.timer = 5.5;
-      }
-    }
-    difficultyProfile() {
-      return D.difficulties[Math.min(2, this.difficulty + this.matchIndex)];
-    }
-    chooseQueue(playerBp) {
-      const remaining = D.fighters.filter(f => f.key !== playerBp.key);
-      const finalKey = playerBp.key !== "lao_a_budget" ? "lao_a_budget" : "hu_xijin_editor";
-      const boss = this.bpByKey(finalKey);
-      const pool = remaining.filter(f => f.key !== finalKey);
-      const early = [];
-      while (early.length < S.arcadeMatches - 1 && pool.length) {
-        early.push(pool.splice((Math.random() * pool.length) | 0, 1)[0]);
-      }
-      return [...early, boss];
-    }
-    resetCampaign() {
-      const pbp = this.bp(this.selected);
-      this.queue = this.chooseQueue(pbp);
-      this.matchIndex = 0;
-      this.arcadeClears = 0;
-      this.campaignWinner = null;
-      this.campaignVictory = false;
-      this.score = 0;
-      this.stats = { maxCombo: 0, damageDealt: 0, perfects: 0 };
-      this.startMatch();
-    }
-    startMatch() {
-      const pbp = this.bp(this.selected);
-      const obp = this.queue[this.matchIndex];
-      this.stage = D.stages[obp.stageTheme];
-      this.backdrop.setTheme(this.stage);
-      this.player = new Fighter(pbp, this.heads[pbp.key], 166, 1, true);
-      this.opponent = new Fighter(obp, this.heads[obp.key], W - 298, -1, false);
-      this.playerRounds = 0; this.opponentRounds = 0;
-      this.projectiles.length = 0;
-      floatTexts.length = 0;
-      this.killLine.reset();
-      const r = this.difficultyProfile().reaction;
-      this.playerAiState = { decisionTimer: r, moveAxis: 0, guardTimer: 0 };
-      this.aiState = { decisionTimer: r * 0.9, moveAxis: 0, guardTimer: 0 };
-      this.state = "match_intro";
-      this.matchIntroTimer = S.matchIntroTime;
-      this.wipe = 0;
-      this.setTicker(`进入 ${this.stage.name}。`, 2.0);
-    }
-    startVersusMatch() {
-      const pbp = this.bp(this.selected);
-      const obp = this.bp(this.selected2);
-      this.stage = D.stages[obp.stageTheme];
-      this.backdrop.setTheme(this.stage);
-      this.player = new Fighter(pbp, this.heads[pbp.key], 166, 1, true);
-      this.opponent = new Fighter(obp, this.heads[obp.key], W - 298, -1, false);
-      this.playerRounds = 0; this.opponentRounds = 0;
-      this.projectiles.length = 0;
-      floatTexts.length = 0;
-      this.killLine.reset();
-      this.matchIndex = 0;
-      this.state = "match_intro";
-      this.matchIntroTimer = S.matchIntroTime;
-      this.setTicker(`双人对战:进入 ${this.stage.name}。`, 2.0);
-    }
-    resetInputs() {
-      for (const k of Object.keys(this.keys)) this.keys[k] = false;
-      for (const k of Object.keys(this.keys2)) this.keys2[k] = false;
-      this.pendingJump = 0;
-      this.pendingJump2 = 0;
-      this.attackBuffer = null;
-    }
-    startRound() {
-      this.player.reset(166, 1);
-      this.opponent.reset(W - 298, -1);
-      this.projectiles.length = 0;
-      floatTexts.length = 0;
-      this.killLine.reset();
-      this.pendingJump = 0;
-      this.pendingJump2 = 0;
-      this.attackBuffer = null;
-      this.hitstop = 0;
-      this.slowmo = 1;
-      this.slowmoTimer = 0;
-      camera.trauma = 0;
-      camera.focus = null;
-      camera.focusTimer = 0;
-      this.roundTime = S.roundTime;
-      this.state = "round_intro";
-      this.banner.timer = S.introTime;
-      this.wipe = 0;
-      const n = this.playerRounds + this.opponentRounds + 1;
-      announce(`ROUND ${n}`, { dur: S.introTime, size: 88 });
-      AU.roundBell();
-      this.fightSignal = false;
-      camera.x = W / 2; camera.y = H / 2; camera.zoom = 1;
-    }
-    attackDirection(keys) {
-      const k = keys || this.keys;
-      if (k.up) return "up";
-      if (k.down) return "down";
-      if (k.left && !k.right) return "left";
-      if (k.right && !k.left) return "right";
-      return "neutral";
-    }
-    applyMove(fighter, result) {
-      if (!result) return false;
-      if (result.projectiles && result.projectiles.length) {
-        this.projectiles.push(...result.projectiles);
-        // cap live projectiles per owner at 8: despawn oldest
-        const mine = this.projectiles.filter(p => p.owner === fighter.uid && !p.dead);
-        for (let i = 0; i < mine.length - 8; i++) mine[i].dead = true;
-      }
-      addFloatText(result.label, fighter.cx, fighter.cy - 110, result.color || fighter.bp.accent2, !!result.isUlt);
-      if (result.isUlt) {
-        camera.addTrauma(0.34);
-        this.hitstop = Math.max(this.hitstop, 0.1);
-        announce(result.label, { sub: fighter.bp.taunt, dur: 1.1, size: 56, color: fighter.bp.accent2 });
-      }
-      this.setTicker(`${fighter.bp.name} 使用了 ${result.label}。`, 1.5);
-      if (result.forceKillLine) {
-        this.killLine.forceTrigger();
-        AU.killLineWarn();
-      }
-      return true;
-    }
-    playerAttack(button) {
-      if (!this.player) return;
-      const dir = this.attackDirection();
-      if (dir === "up") this.pendingJump = 0;
-      let res = null;
-      if (button === "basic") res = this.player.useBasic(dir);
-      else if (button === "skill") res = this.player.useSkill(dir);
-      else res = this.player.useUltimate();
-      if (!this.applyMove(this.player, res) && button !== "ult") {
-        this.attackBuffer = { button, time: 0.12 }; // 7f buffer
-      }
-    }
-    finishRound(winner, reason) {
-      if (this.state === "round_over" || this.state === "campaign_over") return;
-      if (winner === this.player) {
-        this.playerRounds += 1;
-        this.banner.sub = `${this.player.bp.name} 拿下本回合`;
-      } else if (winner === this.opponent) {
-        this.opponentRounds += 1;
-        this.banner.sub = `${this.opponent.bp.name} 拿下本回合`;
-      } else {
-        this.banner.sub = "平局,双方都在硬发帖。";
-      }
-      this.banner.text = reason;
-      this.state = "round_over";
-      this.freezeTimer = S.roundFreezeTime;
-      this.attackBuffer = null;
-      this.player.setMove(0);
-      this.opponent.setMove(0);
-      if (reason === "KO" || reason === "DOUBLE KO") {
-        const loser = winner === this.player ? this.opponent : this.player;
-        announce("K.O.", { dur: 1.3, size: 150, color: [255, 120, 120] });
-        AU.ko();
-        koExplosion(loser.cx, loser.cy, loser.bp.accent);
-        camera.addTrauma(0.85);
-        camera.punchIn(loser, 1.0);
-        this.slowmo = 0.28; this.slowmoTimer = 0.9;
-        this.koFlash = 0.14;
-      } else {
-        announce(reason === "TIME" ? "TIME UP" : reason, { dur: 1.2, size: 92 });
-      }
-      // round bonuses (arcade)
-      if (winner === this.player && this.mode === "arcade") {
-        let bonus = 5000 + Math.ceil(this.roundTime) * 50;
-        if (this.player.health >= S.maxHealth) {
-          bonus += 10000;
-          this.stats.perfects += 1;
-          announce("PERFECT!", { dur: 1.1, size: 64, color: [255, 230, 130] });
-        }
-        this.score += bonus;
-        this.banner.sub += `  +${bonus.toLocaleString()}分`;
-      }
-    }
-    resolveMatchEnd() {
-      if (this.mode === "versus") {
-        this.campaignVictory = true;
-        this.campaignWinnerIsP1 = this.playerRounds >= S.roundsToWin;
-        this.campaignWinner = this.campaignWinnerIsP1 ? this.player.bp : this.opponent.bp;
-        this.state = "campaign_over";
-        return;
-      }
-      if (this.playerRounds >= S.roundsToWin) {
-        this.arcadeClears += 1;
-        this.score += 8000 * (this.difficulty + 1); // match-clear bonus scales with AI level
-        if (this.matchIndex + 1 >= this.queue.length) {
-          this.campaignVictory = true;
-          this.campaignWinner = this.player.bp;
-          this.state = "campaign_over";
-          if (this.score > this.highScore) { this.highScore = this.score; this.saveSettings(); }
-        } else {
-          this.matchIndex += 1;
-          this.startMatch();
-        }
-        return;
-      }
-      if (this.opponentRounds >= S.roundsToWin) {
-        this.campaignVictory = false;
-        this.campaignWinner = this.opponent.bp;
-        this.state = "campaign_over";
-        if (this.score > this.highScore) { this.highScore = this.score; this.saveSettings(); }
-      }
-    }
-    scoreGrade() {
-      const s = this.score;
-      if (!this.campaignVictory) return s >= 40000 ? "B" : "C";
-      if (s >= 90000) return "S";
-      if (s >= 65000) return "A";
-      if (s >= 45000) return "B";
-      return "C";
-    }
-
-    onProjectileHit(source, target, proj, blocked, justGuard) {
-      const heavy = proj.damage >= 10;
-      // zoning pays less meter; close-range pays more
-      const meterScale = proj.close ? 1.5 : (proj.travel > 700 ? 0.5 : 1.0);
-      source.gainMeter(proj.damage * (blocked ? 0.65 : 1.0) * meterScale);
-      if (blocked) {
-        this.hitstop = Math.max(this.hitstop, 0.05);
-        camera.addTrauma(0.08);
-        if (justGuard) {
-          sparkBurst(proj.x, proj.y, [150, 225, 255], 10, 360, 0.2, false);
-          addFloatText("JUST GUARD!", target.cx, target.cy - 104, [150, 225, 255], true);
-          AU.reflect();
-        } else {
-          sparkBurst(proj.x, proj.y, [140, 190, 255], 5, 240, 0.16, false);
-          addFloatText("BLOCK", target.cx, target.cy - 88, target.bp.accent2);
-          AU.block();
-        }
-      } else {
-        this.hitstop = Math.max(this.hitstop, heavy ? 0.13 : 0.07);
-        camera.addTrauma(heavy ? 0.36 : 0.2);
-        sparkBurst(proj.x, proj.y, source.bp.accent2, heavy ? 14 : 8, heavy ? 480 : 330, 0.2, heavy);
-        addFloatText(`-${proj.damage}`, target.cx, target.cy - 88, D.C.gold);
-        if (proj.close) addFloatText("CLOSE!", target.cx, target.cy - 116, D.C.gold);
-        if (heavy) AU.hitHeavy(); else AU.hitLight();
-        // combo counter mirrors the victim's true-combo count
-        source.combo = target.comboTaken;
-        source.comboTimer = 1.1;
-        source.comboPop = 0.12;
-        // scoring + stats
-        this.addScore(source, proj.damage * 10 + (source.combo >= 2 ? source.combo * 25 : 0) + (proj.close ? 30 : 0));
-        if (source === this.player) {
-          this.stats.damageDealt += proj.damage;
-          if (source.combo > this.stats.maxCombo) this.stats.maxCombo = source.combo;
-        }
-      }
-    }
-
-    incomingProjectileNear(ownerKey, target, maxDist = 220) {
-      for (const p of this.projectiles) {
-        if (p.owner !== ownerKey) continue;
-        if (Math.abs(p.x - target.cx) < maxDist && Math.abs(p.y - target.cy) < 120) return true;
-      }
-      return false;
-    }
-    updateAI(fighter, target, state, dt) {
-      const prof = this.difficultyProfile();
-      fighter.faceTarget(target.cx);
-      state.decisionTimer -= dt;
-      state.guardTimer = Math.max(0, state.guardTimer - dt);
-      if (state.guardTimer > 0) fighter.guardRequested = true;
-      else fighter.guardRequested = false;
-
-      const incoming = this.incomingProjectileNear(target.uid, fighter);
-      if (incoming && fighter.onGround && Math.random() < prof.guard) {
-        state.guardTimer = prof.reaction * 1.1;
-        fighter.guardRequested = true;
-      }
-      if (state.decisionTimer > 0) {
-        fighter.setMove(state.moveAxis || 0);
-        return;
-      }
-      state.decisionTimer = prof.reaction * rand(0.85, 1.2);
-      const distance = target.cx - fighter.cx;
-      const absD = Math.abs(distance);
-      const targetAbove = target.cy < fighter.cy - 32;
-      const toward = distance > 0 ? 1 : -1;
-      const dir = distance > 0 ? "right" : "left";
-      state.moveAxis = 0;
-
-      if (this.killLine.phase === "warning" && fighter.onGround && Math.random() < 0.75) fighter.jump();
-
-      if (fighter.meter >= S.maxMeter && (absD < 640 || Math.random() < prof.aggression)) {
-        this.applyMove(fighter, fighter.useUltimate());
-        return;
-      }
-      if (target.hitstun > 0 && absD < 220 && Math.random() < prof.combo) {
-        this.applyMove(fighter, fighter.useSkill(dir));
-        return;
-      }
-      if (targetAbove && Math.random() < prof.antiAir) {
-        this.applyMove(fighter, fighter.useBasic("up"));
-        return;
-      }
-      if (absD < 160) {
-        const style = fighter.bp.aiStyle;
-        const zoner = style === "zone" || style === "control" || style === "caster" || style === "editor";
-        // zoners create space with a backdash (i-frames) when crowded
-        if (zoner && fighter.dashCd <= 0 && fighter.onGround && Math.random() < prof.aggression * 0.6) {
-          fighter.setMove(-toward);
-          fighter.dash();
-          state.moveAxis = -toward;
-          return;
-        }
-        if ((style === "rush" || style === "brawler") && Math.random() < prof.aggression) {
-          this.applyMove(fighter, fighter.useSkill(dir));
-        } else if (Math.random() < 0.55) {
-          this.applyMove(fighter, fighter.useBasic("down"));
-        } else {
-          this.applyMove(fighter, fighter.useBasic(dir));
-        }
-        state.moveAxis = (style === "rush" || style === "brawler") ? toward : -toward;
-        return;
-      }
-      if (absD > fighter.bp.range + 80) {
-        state.moveAxis = toward;
-        if (Math.random() < prof.aggression * 0.45) this.applyMove(fighter, fighter.useSkill(dir));
-        return;
-      }
-      if (absD < fighter.bp.range - 100) {
-        const style = fighter.bp.aiStyle;
-        state.moveAxis = (style !== "rush" && style !== "brawler") ? -toward : toward;
-        if (Math.random() < 0.42) this.applyMove(fighter, fighter.useBasic(toward > 0 ? "left" : "right"));
-        return;
-      }
-      const roll = Math.random();
-      if (roll < 0.22) this.applyMove(fighter, fighter.useBasic("neutral"));
-      else if (roll < 0.42) this.applyMove(fighter, fighter.useSkill("neutral"));
-      else if (roll < 0.56) this.applyMove(fighter, fighter.useBasic(dir));
-      else if (roll < 0.68) this.applyMove(fighter, fighter.useSkill(dir));
-      else if (roll < 0.78) this.applyMove(fighter, fighter.useBasic("down"));
-      else if (roll < 0.86) this.applyMove(fighter, fighter.useSkill(toward > 0 ? "left" : "right"));
-      else if (fighter.dashCd <= 0 && Math.random() < prof.aggression) fighter.dash();
-      else state.moveAxis = 0;
-      if (target.onGround && Math.random() < 0.09) fighter.jump();
-    }
-
-    updateProjectiles(dt, collide = true) {
-      if (!this.player || !this.opponent) return;
-      const anchors = {
-        [this.player.uid]: { x: this.player.cx, y: this.player.cy },
-        [this.opponent.uid]: { x: this.opponent.cx, y: this.opponent.cy },
-      };
-      // projectile clash: opposing shots trade 1-for-1
-      if (collide) {
-        for (let i = 0; i < this.projectiles.length; i++) {
-          const a = this.projectiles[i];
-          if (a.dead) continue;
-          for (let j = i + 1; j < this.projectiles.length; j++) {
-            const b = this.projectiles[j];
-            if (b.dead || a.owner === b.owner) continue;
-            const ra = a.rect, rb = b.rect;
-            if (ra.x < rb.x + rb.w && ra.x + ra.w > rb.x && ra.y < rb.y + rb.h && ra.y + ra.h > rb.y) {
-              a.dead = true; b.dead = true;
-              sparkBurst((a.x + b.x) / 2, (a.y + b.y) / 2, [240, 240, 250], 8, 320, 0.18, false);
-              AU.block();
-              break;
-            }
-          }
-        }
-      }
-      const kept = [];
-      for (const p of this.projectiles) {
-        if (p.dead) continue;
-        if (!p.update(dt, anchors)) continue;
-        if (p.x < -200 || p.x > W + 200 || p.y < -220 || p.y > H + 220) continue;
-        const source = p.owner === this.player.uid ? this.player : this.opponent;
-        const target = source === this.player ? this.opponent : this.player;
-        const r = p.rect, hb = target.hurtbox;
-        const overlap = collide && r.x < hb.x + hb.w && r.x + r.w > hb.x && r.y < hb.y + hb.h && r.y + r.h > hb.y;
-        if (target.reflectTimer > 0 && overlap) {
-          p.owner = target.uid;
-          p.anchorOwner = target.uid;
-          p.vx *= -1;
-          p.returning = false;
-          addFloatText(target.bp.reflectLine || "REFLECT", target.cx, target.cy - 92, target.bp.accent2, !!target.bp.reflectLine);
-          AU.reflect();
-          this.setTicker(`${target.bp.name} 反弹了 ${p.label}。`, 1.4);
-          kept.push(p);
-          continue;
-        }
-        if (overlap) {
-          // true-combo damage scaling: decays toward 55% (anti-cheese)
-          const nextCombo = (target.comboTakenTimer > 0 || target.hitstun > 0) ? target.comboTaken + 1 : 1;
-          if (nextCombo >= 3) {
-            p.damage = Math.max(2, Math.round(p.damage * Math.max(0.55, 1 - 0.08 * (nextCombo - 1))));
-          }
-          // approach incentive: point-blank hits do 25% more
-          if (Math.abs(source.cx - target.cx) < 260) { p.damage = Math.round(p.damage * 1.25); p.close = true; }
-          p.travel = Math.abs(p.x - p.spawnX);
-          const knockDir = target.cx >= source.cx ? 1 : -1;
-          const [landed, blocked, justGuard] = target.takeDamage(p.damage, knockDir, p.knockbackY);
-          if (landed) this.onProjectileHit(source, target, p, blocked, justGuard);
-          continue;
-        }
-        kept.push(p);
-      }
-      this.projectiles = kept;
-    }
-    updateKillLine(dt) {
-      if (!this.player || !this.opponent) return;
-      if (!this.killLine.used &&
-        (this.player.healthRatio <= S.lowHealthThreshold || this.opponent.healthRatio <= S.lowHealthThreshold)) {
-        if (this.killLine.trigger()) {
-          addFloatText("牢A incoming", W / 2, FLOOR - 118, D.C.pink, true);
-          this.setTicker("检测到低血量,牢A 正在画斩杀线。", 2.0);
-          AU.killLineWarn();
-        }
-      }
-      const evt = this.killLine.update(dt);
-      if (evt === "fire") {
-        this.setTicker("牢A 到场,斩杀线生效。", 1.8);
-        announce("斩杀线", { sub: "你已经踩进斩杀线了", dur: 0.9, size: 64, color: D.C.pink });
-        AU.killLineFire();
-        camera.addTrauma(0.4);
-      }
-      if (this.killLine.phase !== "active") return;
-      const band = this.killLine.band;
-      for (const f of [this.player, this.opponent]) {
-        const hb = f.hurtbox;
-        const overlap = band.x < hb.x + hb.w && band.x + band.w > hb.x && band.y < hb.y + hb.h && band.y + band.h > hb.y;
-        if (this.killLine.canHit(f.uid) && overlap) {
-          const dir = f === this.player ? -1 : 1;
-          const [landed, blocked] = f.takeDamage(this.killLine.damage, dir, -540);
-          if (landed) {
-            this.killLine.hits.add(f.uid);
-            addFloatText("斩杀线!", f.cx, f.cy - 104, D.C.pink, true);
-            sparkBurst(f.cx, f.cy, D.C.pink, 16, 520, 0.24, true);
-            this.hitstop = Math.max(this.hitstop, 0.12);
-            camera.addTrauma(0.45);
-            AU.hitHeavy();
-            if (blocked) addFloatText("Guarded", f.cx, f.cy - 74, f.bp.accent2);
-          }
-        }
-      }
-    }
-
-    update(dt) {
-      this.elapsed += dt;
-      this.backdrop.update(dt);
-      this.cycleTicker(dt);
-      updateAnnouncer(dt);
-      updateParticles(dt);
-      updateFloatTexts(dt);
-
-      // slow-mo decay
-      if (this.slowmoTimer > 0) {
-        this.slowmoTimer -= dt;
-        if (this.slowmoTimer <= 0) this.slowmo = 1;
-      }
-      this.koFlash = Math.max(0, this.koFlash - dt);
-      this.wipe += dt;
-
-      if (this.state === "menu" || this.state === "title" || this.paused) return;
-
-      camera.update(dt, this.player, this.opponent);
-
-      if (this.state === "match_intro") {
-        this.matchIntroTimer -= dt;
-        if (this.matchIntroTimer <= 0) this.startRound();
-        return;
-      }
-      if (this.state === "round_intro") {
-        this.banner.timer -= dt;
-        if (this.banner.timer <= 0) {
-          this.state = "playing";
-          announce("FIGHT!", { dur: 0.7, size: 110, color: [255, 210, 110] });
-          camera.addTrauma(0.3);
-          this.fightSignal = true;
-        }
-        return;
-      }
-      if (this.state === "round_over") {
-        // keep simulating physics in slow-mo so the KO fall plays out dramatically
-        if (this.player && this.opponent) {
-          const sdt = dt * this.slowmo;
-          this.player.update(sdt, W);
-          this.opponent.update(sdt, W);
-          this.updateProjectiles(sdt, false);
-        }
-        this.freezeTimer -= dt;
-        if (this.freezeTimer <= 0) {
-          if (this.playerRounds >= S.roundsToWin || this.opponentRounds >= S.roundsToWin) this.resolveMatchEnd();
-          else this.startRound();
-        }
-        return;
-      }
-      if (this.state !== "playing" || !this.player || !this.opponent) return;
-
-      // hit-stop gates fighters + projectiles, not FX
-      if (this.hitstop > 0) {
-        this.hitstop -= dt;
-        return;
-      }
-
-      const gdt = dt * this.slowmo;
-
-      if (!this.autoplay) {
-        let axis = 0;
-        if (this.keys.left && !this.keys.right) axis = -1;
-        else if (this.keys.right && !this.keys.left) axis = 1;
-        this.player.setMove(axis);
-        this.player.fastFall = this.keys.down;
-        this.player.guardRequested = this.keys.guard;
-
-        if (this.pendingJump > 0) {
-          this.pendingJump -= gdt;
-          if (this.pendingJump <= 0 && this.keys.up) this.player.jump();
-        }
-        if (this.attackBuffer) {
-          this.attackBuffer.time -= gdt;
-          if (this.attackBuffer.time <= 0) this.attackBuffer = null;
-          else {
-            const dir = this.attackDirection();
-            const res = this.attackBuffer.button === "basic" ? this.player.useBasic(dir) : this.player.useSkill(dir);
-            if (this.applyMove(this.player, res)) this.attackBuffer = null;
-          }
-        }
-      } else {
-        this.updateAI(this.player, this.opponent, this.playerAiState, gdt);
-      }
-      if (this.mode === "versus" && !this.autoplay) {
-        let axis2 = 0;
-        if (this.keys2.left && !this.keys2.right) axis2 = -1;
-        else if (this.keys2.right && !this.keys2.left) axis2 = 1;
-        this.opponent.setMove(axis2);
-        this.opponent.fastFall = this.keys2.down;
-        this.opponent.guardRequested = this.keys2.guard;
-        if (this.pendingJump2 > 0) {
-          this.pendingJump2 -= gdt;
-          if (this.pendingJump2 <= 0 && this.keys2.up) this.opponent.jump();
-        }
-      } else {
-        this.updateAI(this.opponent, this.player, this.aiState, gdt);
-      }
-      this.player.faceTarget(this.opponent.cx);
-      this.opponent.faceTarget(this.player.cx);
-      this.player.update(gdt, W);
-      this.opponent.update(gdt, W);
-      // pushboxes: soft horizontal separation (dashes can cross through)
-      if (this.player.dashTimer <= 0 && this.opponent.dashTimer <= 0) {
-        const ah = this.player.hurtbox, bh = this.opponent.hurtbox;
-        const vOverlap = Math.min(ah.y + ah.h, bh.y + bh.h) - Math.max(ah.y, bh.y);
-        const hOverlap = Math.min(ah.x + ah.w, bh.x + bh.w) - Math.max(ah.x, bh.x);
-        if (vOverlap > 40 && hOverlap > 0) {
-          const push = Math.min(hOverlap / 2, 340 * gdt);
-          const dir = this.player.cx <= this.opponent.cx ? -1 : 1;
-          const lim = (f, x) => clamp(x, S.stageMargin, W - S.stageMargin - f.w);
-          this.player.x = lim(this.player, this.player.x + dir * push);
-          this.opponent.x = lim(this.opponent, this.opponent.x - dir * push);
-        }
-      }
-      this.updateProjectiles(gdt);
-      this.updateKillLine(gdt);
-
-      this.roundTime = Math.max(0, this.roundTime - gdt);
-      if (this.player.health <= 0 && this.opponent.health <= 0) this.finishRound(null, "DOUBLE KO");
-      else if (this.player.health <= 0) this.finishRound(this.opponent, "KO");
-      else if (this.opponent.health <= 0) this.finishRound(this.player, "KO");
-      else if (this.roundTime <= 0) {
-        const ph = Math.floor(this.player.health), oh = Math.floor(this.opponent.health);
-        if (ph > oh) this.finishRound(this.player, "TIME");
-        else if (oh > ph) this.finishRound(this.opponent, "TIME");
-        else this.finishRound(null, "TIME");
-      }
-    }
-
-    // ---------- drawing ----------
-    drawHud(ctx) {
-      const p = this.player, o = this.opponent;
-      if (!p || !o) return;
-      this.drawHealthBlock(ctx, p, 22, false);
-      this.drawHealthBlock(ctx, o, W - 440, true);
-
-      // timer
-      ctx.fillStyle = "rgba(15,19,31,0.84)";
-      roundRect(ctx, W / 2 - 80, 16, 160, 96, 20); ctx.fill();
-      ctx.strokeStyle = "rgba(248,227,176,0.7)";
-      ctx.lineWidth = 2;
-      roundRect(ctx, W / 2 - 80, 16, 160, 96, 20); ctx.stroke();
-      const t = Math.max(0, Math.ceil(this.roundTime));
-      strokedText(ctx, String(t).padStart(2, "0"), W / 2, 56, font(46, true), t <= 10 ? "rgb(255,130,120)" : "rgb(247,246,241)", 5);
-      const modeLabel = this.mode === "versus"
-        ? "双人对战 · BO3"
-        : `Arcade ${this.matchIndex + 1}/${S.arcadeMatches} · ${this.difficultyProfile().name}`;
-      strokedText(ctx, modeLabel, W / 2, 94, font(13, true), "rgb(177,188,210)", 0);
-      if (this.mode === "arcade") {
-        strokedText(ctx, `SCORE ${this.score.toLocaleString()}`, W / 2, 128, font(16, true), rgb(D.C.gold), 4);
-      }
-
-      // combo counters
-      for (const [f, x, align] of [[p, 460, "left"], [o, W - 460, "right"]]) {
-        if (f.combo >= 2) {
-          const pop = 1 + f.comboPop * 4;
-          const col = f.combo >= 8 ? [255, 110, 110] : f.combo >= 5 ? [255, 168, 90] : f.combo >= 3 ? [255, 220, 110] : [240, 240, 240];
-          ctx.save();
-          ctx.translate(x, 160);
-          ctx.scale(pop, pop);
-          strokedText(ctx, `${f.combo} HITS`, 0, 0, font(34, true), rgb(col), 6);
-          ctx.restore();
-        }
-      }
-
-      // ticker
-      ctx.fillStyle = "rgba(14,17,29,0.74)";
-      roundRect(ctx, 28, H - 50, W - 56, 32, 14); ctx.fill();
-      strokedText(ctx, this.ticker.text, W / 2, H - 34, font(15, true), "rgb(247,246,241)", 0);
-    }
-    drawHealthBlock(ctx, f, x, flip) {
-      // slanted translucent backplate with a gold light edge
-      slantPath(ctx, x, 16, 418, 112, flip ? -14 : 14);
-      const bgGrad = ctx.createLinearGradient(x, 16, x, 128);
-      bgGrad.addColorStop(0, "rgba(10,14,26,0.85)");
-      bgGrad.addColorStop(1, "rgba(14,18,32,0.55)");
-      ctx.fillStyle = bgGrad;
-      ctx.fill();
-      ctx.strokeStyle = "rgba(248,227,176,0.55)";
-      ctx.lineWidth = 2;
-      slantPath(ctx, x, 16, 418, 112, flip ? -14 : 14);
-      ctx.stroke();
-      ctx.strokeStyle = rgb(f.bp.accent, 0.9);
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#a9d7ff"; ctx.lineWidth = 5;
       ctx.beginPath();
-      if (flip) { ctx.moveTo(x + 432, 16); ctx.lineTo(x + 418, 128); }
-      else { ctx.moveTo(x + 14, 16); ctx.lineTo(x, 128); }
+      ctx.arc(sx, sy - f.h * 0.5 * cam.zoom, 120 * cam.zoom, -1.2, 1.2);
       ctx.stroke();
-
-      // portrait token in slanted frame
-      const img = f.head;
-      const tx = flip ? x + 418 - 14 - 78 : x + 16;
-      ctx.save();
-      slantPath(ctx, tx, 24, 78, 78, flip ? -8 : 8);
-      ctx.clip();
-      if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, tx - 4, 22, 88, 88);
       ctx.restore();
-
-      // name (italic, fighting-game style)
-      ctx.font = `italic bold 17px ${'"Microsoft YaHei", sans-serif'}`;
-      ctx.textAlign = flip ? "right" : "left";
-      ctx.textBaseline = "middle";
-      ctx.lineWidth = 4; ctx.lineJoin = "round";
-      ctx.strokeStyle = "rgba(10,12,22,0.9)";
-      const nx = flip ? tx - 14 : x + 108, ny = 36;
-      ctx.strokeText(f.bp.name, nx, ny);
-      ctx.fillStyle = "rgb(247,246,241)";
-      ctx.fillText(f.bp.name, nx, ny);
-
-      const bx = flip ? x + 14 : x + 106;
-      const bw = 290;
-      const belowLine = f.healthRatio <= S.lowHealthThreshold;
-      const ghostRatio = clamp(f.displayedHealth / S.maxHealth, 0, 1);
-      const hpColor = belowLine
-        ? `rgba(255,${93 + Math.abs(Math.sin(this.elapsed * 8)) * 80 | 0},161,1)`
-        : rgb(f.bp.accent);
-      // health: slanted, segmented, mirrored drain
-      slantBar(ctx, bx, 50, bw, 24, {
-        back: "rgb(42,48,64)",
-        fills: [[ghostRatio, "rgba(255,120,110,0.85)"], [f.healthRatio, hpColor]],
-        ticks: 10,
-      }, flip, flip ? -8 : 8);
-      // 牢A execution threshold marker
-      const lineFrac = flip ? 1 - S.lowHealthThreshold : S.lowHealthThreshold;
-      const lineX = bx + bw * lineFrac + (flip ? -2 : 10);
-      ctx.strokeStyle = belowLine ? "rgb(255,93,161)" : "rgba(255,93,161,0.8)";
-      ctx.lineWidth = belowLine ? 3 : 2;
-      ctx.beginPath(); ctx.moveTo(lineX + 3, 47); ctx.lineTo(lineX - 3, 77); ctx.stroke();
-      if (belowLine) strokedText(ctx, "斩杀线", lineX, 42, font(11, true), "rgb(255,150,195)", 3);
-      // guard gauge
-      slantBar(ctx, bx, 80, bw * 0.62, 9, {
-        back: "rgb(36,40,56)",
-        fills: [[f.guardRatio, rgb(f.bp.accent2)]],
-      }, flip, flip ? -4 : 4);
-      // super meter with pulse when full
-      const full = f.meter >= S.maxMeter;
-      slantBar(ctx, bx, 95, bw * 0.84, 13, {
-        back: "rgb(30,22,40)",
-        fills: [[f.meterRatio, full ? `rgba(255,${160 + Math.sin(this.elapsed * 10) * 60 | 0},220,1)` : rgb(D.C.pink)]],
-        ticks: 4,
-        edge: full ? "rgba(255,180,225,0.95)" : "rgba(180,150,190,0.6)",
-      }, flip, flip ? -5 : 5);
-      if (full) {
-        const ux = flip ? bx + bw * 0.84 + 26 : bx - 18;
-        strokedText(ctx, "U!", ux, 102, font(15 + Math.sin(this.elapsed * 10) * 2, true), rgb(D.C.pink), 3);
-      }
-      // round pips as diamonds
-      for (let i = 0; i < S.roundsToWin; i++) {
-        const won = i < (f === this.player ? this.playerRounds : this.opponentRounds);
-        const px = flip ? bx + bw - 12 - i * 26 : bx + 12 + i * 26;
-        ctx.save();
-        ctx.translate(px, 119);
-        ctx.rotate(Math.PI / 4);
-        ctx.fillStyle = won ? rgb(f.bp.accent2) : "rgb(62,68,86)";
-        ctx.fillRect(-6, -6, 12, 12);
-        ctx.strokeStyle = "rgba(248,236,212,0.55)";
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(-6, -6, 12, 12);
-        ctx.restore();
-      }
-      ctx.textAlign = "left";
     }
-    drawTitle(ctx) {
-      // dark vignette
-      ctx.fillStyle = "rgba(5,7,14,0.55)";
+  }
+
+  function drawStage() {
+    const st = (ASSETS.manifest.stages || {})[Game.stageKey];
+    const img = st && ASSETS.img[st];
+    if (!img) {
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "#141420");
+      g.addColorStop(0.85, "#2a2233");
+      g.addColorStop(1, "#191420");
+      ctx.fillStyle = g;
       ctx.fillRect(0, 0, W, H);
-      const bob = Math.sin(this.elapsed * 2.2) * 8;
-      const imgL = this.heads["chen_ping_macro"];
-      const imgR = this.heads["zhang_weiwei_civil"];
-      ctx.save();
-      ctx.translate(W / 2 - 330, H / 2 - 130 + bob);
-      ctx.rotate(-0.12);
-      if (imgL && imgL.complete && imgL.naturalWidth > 0) ctx.drawImage(imgL, -95, -95, 190, 190);
-      ctx.restore();
-      ctx.save();
-      ctx.translate(W / 2 + 330, H / 2 - 130 - bob);
-      ctx.rotate(0.12);
-      ctx.scale(-1, 1);
-      if (imgR && imgR.complete && imgR.naturalWidth > 0) ctx.drawImage(imgR, -95, -95, 190, 190);
-      ctx.restore();
-
-      strokedText(ctx, "梗图格斗", W / 2, H / 2 - 175, font(96, true), "rgb(250,204,90)", 14);
-      strokedText(ctx, "陈平 VS 张维为", W / 2, H / 2 - 90, font(58, true), "rgb(247,246,241)", 10);
-      strokedText(ctx, "IRONIC ANIME MEME ARENA", W / 2, H / 2 - 38, font(20, true), "rgb(177,188,210)", 0);
-
-      const pulse = 0.55 + Math.abs(Math.sin(this.elapsed * 3)) * 0.45;
-      ctx.globalAlpha = pulse;
-      strokedText(ctx, "按任意键开始", W / 2, H / 2 + 70, font(30, true), "rgb(247,246,241)", 6);
-      ctx.globalAlpha = 1;
-
-      if (this.highScore > 0) {
-        strokedText(ctx, `最高分 HI-SCORE  ${this.highScore.toLocaleString()}`, W / 2, H / 2 + 130, font(20, true), rgb(D.C.gold), 4);
-      }
-      strokedText(ctx, "街机模式 · 双人对战 · 9 位梗图选手 · 牢A斩杀线", W / 2, H / 2 + 178, font(16), "rgb(177,188,210)", 0);
-      strokedText(ctx, "本作为梗图恶搞 Parody · v2.0 · 2026", W / 2, H - 36, font(13), "rgb(120,130,155)", 0);
+      ctx.fillStyle = "#100d16";
+      ctx.fillRect(0, w2sy(FLOOR), W, H - w2sy(FLOOR));
+      return;
     }
-    drawMenu(ctx) {
-      // headline rivals flanking the title
-      const bob = Math.sin(this.elapsed * 2.4) * 5;
-      const imgL = this.heads["chen_ping_macro"];
-      const imgR = this.heads["zhang_weiwei_civil"];
-      ctx.save();
-      ctx.translate(W / 2 - 360, 62 + bob);
-      ctx.rotate(-0.1);
-      if (imgL && imgL.complete && imgL.naturalWidth > 0) ctx.drawImage(imgL, -52, -52, 104, 104);
-      ctx.restore();
-      ctx.save();
-      ctx.translate(W / 2 + 360, 62 - bob);
-      ctx.rotate(0.1);
-      ctx.scale(-1, 1);
-      if (imgR && imgR.complete && imgR.naturalWidth > 0) ctx.drawImage(imgR, -52, -52, 104, 104);
-      ctx.restore();
-      // VS bolts
-      ctx.strokeStyle = rgb(D.C.gold, 0.55 + Math.abs(Math.sin(this.elapsed * 5)) * 0.3);
-      ctx.lineWidth = 4;
-      ctx.lineJoin = "round";
-      for (const sgn of [-1, 1]) {
-        ctx.beginPath();
-        ctx.moveTo(W / 2 + sgn * 300, 40);
-        ctx.lineTo(W / 2 + sgn * 278, 58);
-        ctx.lineTo(W / 2 + sgn * 292, 64);
-        ctx.lineTo(W / 2 + sgn * 272, 84);
-        ctx.stroke();
-      }
-      strokedText(ctx, "梗图格斗:陈平 VS 张维为", W / 2, 52, font(44, true), "rgb(247,246,241)", 8);
-      strokedText(ctx, "选择人设形态 · 方向 + J/K 改变招式 · 通关三场街机阶梯", W / 2, 96, font(18), "rgb(177,188,210)", 0);
-      if (this.highScore > 0) {
-        ctx.textAlign = "right";
-        strokedText(ctx, `HI-SCORE ${this.highScore.toLocaleString()}`, W - 40, 36, font(16, true), rgb(D.C.gold), 4);
-        ctx.textAlign = "left";
-      }
+    // parallax: stage image wider than screen
+    const iw = img.width, ih = img.height;
+    const scale = (H / ih) * 1.02;
+    const drawW = iw * scale;
+    const worldSpan = S.stageW;
+    const t = (cam.x - W / 2 / cam.zoom) / (worldSpan - W / cam.zoom);
+    const maxOff = drawW - W;
+    const off = clamp(t, 0, 1) * maxOff * 0.9;
+    ctx.drawImage(img, -off - maxOff * 0.05, 0, drawW, H);
+    // floor tint to anchor fighters
+    const g = ctx.createLinearGradient(0, w2sy(FLOOR) - 10, 0, H);
+    g.addColorStop(0, "rgba(8,8,14,0)");
+    g.addColorStop(1, "rgba(8,8,14,0.55)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, w2sy(FLOOR) - 10, W, H - w2sy(FLOOR) + 10);
+  }
 
-      const leftP = { x: 34, y: 130, w: 900, h: 680 };
-      const rightP = { x: 960, y: 130, w: 486, h: 680 };
-      for (const pn of [leftP, rightP]) {
-        ctx.fillStyle = "rgba(15,20,33,0.82)";
-        roundRect(ctx, pn.x, pn.y, pn.w, pn.h, 28); ctx.fill();
-        ctx.strokeStyle = "rgba(248,223,178,0.8)";
-        ctx.lineWidth = 2;
-        roundRect(ctx, pn.x, pn.y, pn.w, pn.h, 28); ctx.stroke();
-      }
-
-      const cw = 280, chh = 206;
-      for (let i = 0; i < D.fighters.length; i++) {
-        const bp = D.fighters[i];
-        const row = (i / 3) | 0, col = i % 3;
-        const rx = leftP.x + 16 + col * (cw + 12);
-        const ry = leftP.y + 16 + row * (chh + 14);
-        const sel = i === this.selected;
-        const sel2 = this.mode === "versus" && i === this.selected2;
-        if (sel || sel2) {
-          ctx.fillStyle = rgb(sel ? bp.accent2 : D.C.pink, 0.22 + Math.abs(Math.sin(this.elapsed * 2.2)) * 0.13);
-          roundRect(ctx, rx - 6, ry - 6, cw + 12, chh + 12, 22); ctx.fill();
+  function drawProjectiles() {
+    for (const p of projectiles) {
+      const pr = propImg(p.sprite);
+      const sx = w2sx(p.x), sy = w2sy(p.y);
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(p.rotation);
+      if (p.sprite === "wave") {
+        // 西方震撼波: expanding rings + 「震」
+        const r0 = p.r * cam.zoom;
+        for (let k = 0; k < 3; k++) {
+          const rr = r0 * (0.8 + k * 0.45 + (p.age % 12) / 24);
+          ctx.strokeStyle = `rgba(169,215,255,${0.85 - k * 0.28})`;
+          ctx.lineWidth = 6 - k * 1.5;
+          ctx.beginPath(); ctx.arc(0, 0, rr, 0, TAU); ctx.stroke();
         }
-        ctx.fillStyle = "rgba(18,24,38,0.85)";
-        roundRect(ctx, rx, ry, cw, chh, 18); ctx.fill();
-        ctx.strokeStyle = sel ? rgb(bp.accent) : sel2 ? rgb(D.C.pink) : "rgb(96,106,132)";
-        ctx.lineWidth = sel || sel2 ? 3 : 2;
-        roundRect(ctx, rx, ry, cw, chh, 18); ctx.stroke();
-        if (sel) strokedText(ctx, "P1", rx + 24, ry + 18, font(14, true), rgb(bp.accent2), 3);
-        if (sel2) strokedText(ctx, "P2", rx + cw - 24, ry + 18, font(14, true), rgb(D.C.pink), 3);
-
-        // accent ribbon along the card bottom
-        ctx.save();
-        roundRect(ctx, rx, ry, cw, chh, 18);
-        ctx.clip();
-        ctx.fillStyle = rgb(bp.accent, 0.16);
-        ctx.beginPath();
-        ctx.moveTo(rx, ry + chh); ctx.lineTo(rx + cw, ry + chh);
-        ctx.lineTo(rx + cw, ry + chh - 34); ctx.lineTo(rx, ry + chh - 56);
-        ctx.closePath(); ctx.fill();
-        ctx.restore();
-
-        const img = this.heads[bp.key];
-        if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, rx + 12, ry + 32, 132, 132);
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        ctx.font = font(19, true);
-        ctx.fillStyle = "rgb(247,246,241)";
-        ctx.fillText(bp.name, rx + 154, ry + 50);
-        ctx.font = `italic bold 13px "Microsoft YaHei", sans-serif`;
-        ctx.fillStyle = rgb(bp.accent2);
-        ctx.fillText(bp.title, rx + 154, ry + 78);
-        ctx.font = font(13);
-        ctx.fillStyle = "rgb(177,188,210)";
-        ctx.fillText("U " + bp.ult, rx + 154, ry + 112);
-        ctx.font = font(12);
-        ctx.fillStyle = rgb(bp.accent, 0.95);
-        ctx.fillText(bp.taunt, rx + 16, ry + 184);
-      }
-
-      // right detail panel
-      const bp = this.bp(this.selected);
-      const img = this.heads[bp.key];
-      ctx.textAlign = "left";
-      ctx.font = font(30, true);
-      ctx.fillStyle = "rgb(247,246,241)";
-      ctx.fillText(bp.name, rightP.x + 24, rightP.y + 40);
-      ctx.font = font(16, true);
-      ctx.fillStyle = rgb(bp.accent2);
-      ctx.fillText(bp.title, rightP.x + 24, rightP.y + 72);
-      if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, rightP.x + rightP.w - 168, rightP.y + 20, 144, 144);
-      ctx.font = font(15, true);
-      ctx.fillStyle = rgb(bp.accent);
-      if (this.mode === "versus") {
-        const phase = this.menuPhase === 0 ? "P1 选人中(回车确认)" : "P2 选人中(回车开打)";
-        ctx.fillText(`双人对战 · ${phase} · V 切回街机`, rightP.x + 24, rightP.y + 108);
+        ctx.font = font(30 * cam.zoom);
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.strokeStyle = "rgba(12,20,40,0.9)"; ctx.lineWidth = 5;
+        ctx.strokeText("震", 0, 0);
+        ctx.fillStyle = "#dff0ff";
+        ctx.fillText("震", 0, 0);
+      } else if (pr) {
+        const s = (p.r * 2.6 * cam.zoom) / Math.max(pr.p.w, pr.p.h);
+        ctx.drawImage(pr.img, -pr.p.w * s / 2, -pr.p.h * s / 2, pr.p.w * s, pr.p.h * s);
       } else {
-        ctx.fillText(`AI 难度: ${D.difficulties[this.difficulty].name} (按 1/2/3) · V 双人对战`, rightP.x + 24, rightP.y + 108);
+        ctx.fillStyle = "#ffd76a";
+        ctx.beginPath(); ctx.arc(0, 0, p.r * cam.zoom, 0, TAU); ctx.fill();
       }
-      ctx.font = font(15);
-      ctx.fillStyle = "rgb(177,188,210)";
-      ctx.fillText(bp.blurb, rightP.x + 24, rightP.y + 142);
+      ctx.restore();
+      if (p.wave) {
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.strokeStyle = "#a9d7ff"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(sx, sy, p.r * 1.7 * cam.zoom + Math.sin(p.age * 0.4) * 6, 0, TAU); ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
 
-      const listJ = { x: rightP.x + 16, y: rightP.y + 190 };
-      const listK = { x: rightP.x + 16, y: rightP.y + 392 };
-      for (const [list, names, header] of [[listJ, bp.basics, "方向 + J 普攻"], [listK, bp.skills, "方向 + K 技能"]]) {
-        ctx.fillStyle = "rgba(11,15,27,0.78)";
-        roundRect(ctx, list.x, list.y, rightP.w - 32, 186, 18); ctx.fill();
-        ctx.font = font(15, true);
-        ctx.fillStyle = rgb(bp.accent2);
-        ctx.fillText(header, list.x + 16, list.y + 24);
-        const labels = { neutral: "·", up: "W", down: "S", left: "A", right: "D" };
-        let y = list.y + 54;
-        for (const d of DIRS) {
-          ctx.font = font(14, true);
-          ctx.fillStyle = "rgb(220,226,240)";
-          ctx.fillText(labels[d], list.x + 20, y);
-          ctx.font = font(14);
-          ctx.fillStyle = "rgb(247,246,241)";
-          ctx.fillText(names[d], list.x + 52, y);
-          y += 26;
+  function drawFields() {
+    for (const fl of fields) {
+      const sx = w2sx(fl.x);
+      ctx.save();
+      ctx.globalAlpha = 0.16 + Math.sin(fl.t * 0.2) * 0.05;
+      ctx.fillStyle = fl.color;
+      const wpx = fl.w * cam.zoom;
+      ctx.fillRect(sx - wpx / 2, w2sy(FLOOR) - 300 * cam.zoom, wpx, 300 * cam.zoom);
+      ctx.globalAlpha = 0.7;
+      ctx.font = font(22 * cam.zoom);
+      ctx.fillStyle = "#f6d69c";
+      ctx.textAlign = "center";
+      ctx.fillText("复杂话术场", sx, w2sy(FLOOR) - 300 * cam.zoom + 26);
+      ctx.restore();
+    }
+  }
+
+  function drawUltOverlays() {
+    if (Game.ultBeam) {
+      const b = Game.ultBeam;
+      const sy = w2sy(b.y), sx = w2sx(b.x);
+      const len = 980 * cam.zoom, hgt = 120 * cam.zoom;
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      const g = ctx.createLinearGradient(sx, 0, sx + len * b.dir, 0);
+      g.addColorStop(0, "rgba(255,215,106,0.95)");
+      g.addColorStop(1, "rgba(240,129,60,0.1)");
+      ctx.fillStyle = g;
+      ctx.fillRect(b.dir === 1 ? sx : sx - len, sy - hgt / 2, len, hgt);
+      ctx.fillStyle = "#7a2d00";
+      ctx.font = font(54 * cam.zoom);
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(b.text, sx + len / 2 * b.dir, sy);
+      ctx.restore();
+    }
+    if (Game.pillar) {
+      const p = Game.pillar;
+      const sx = w2sx(p.x);
+      ctx.save();
+      ctx.globalAlpha = 0.75;
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "rgba(255,255,255,0.95)");
+      g.addColorStop(1, "rgba(196,242,214,0.15)");
+      ctx.fillStyle = g;
+      const wpx = 200 * cam.zoom;
+      ctx.fillRect(sx - wpx / 2, 0, wpx, w2sy(FLOOR) + 16);
+      const ip = propImg("iphone");
+      if (ip) {
+        const s = (120 * cam.zoom) / Math.max(ip.p.w, ip.p.h);
+        const py = 60 + Math.min(1, p.t / 40) * (w2sy(FLOOR) - 300);
+        ctx.drawImage(ip.img, sx - ip.p.w * s / 2, py, ip.p.w * s, ip.p.h * s);
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const sx = w2sx(p.x), sy = w2sy(p.y);
+      const lifeT = p.age / p.life;
+      let a = p.alpha * (p.fade ? 1 - lifeT : 1);
+      ctx.save();
+      ctx.globalAlpha = clamp(a, 0, 1);
+      if (p.type === "dot") {
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(sx, sy, p.size * cam.zoom * (p.shrink ? 1 - lifeT : 1), 0, TAU); ctx.fill();
+      } else if (p.type === "rect") {
+        ctx.translate(sx, sy); ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+      } else if (p.type === "puff") {
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(sx, sy, p.size * cam.zoom * (0.6 + lifeT), 0, TAU); ctx.fill();
+      } else if (p.type === "ring") {
+        ctx.strokeStyle = p.color; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(sx, sy, p.size * (0.5 + lifeT * 1.6) * cam.zoom, 0, TAU); ctx.stroke();
+      } else if (p.type === "text") {
+        ctx.font = font(p.size * cam.zoom);
+        ctx.fillStyle = p.color;
+        ctx.textAlign = "center";
+        ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = 4;
+        ctx.strokeText(p.text, sx, sy);
+        ctx.fillText(p.text, sx, sy);
+      } else if (p.type === "kline") {
+        ctx.fillStyle = p.color;
+        const w = p.size * 0.35 * cam.zoom, h = p.size * cam.zoom;
+        ctx.fillRect(sx - w / 2, sy - h / 2, w, h);
+        ctx.fillRect(sx - 1.5, sy - h * 0.85, 3, h * 1.7);
+      } else if (p.type === "ghost") {
+        const pd = poseData(p.char, p.pose);
+        const img = ASSETS.img[pd.f];
+        const sc = p.scale * cam.zoom;
+        ctx.globalAlpha = a * 0.4;
+        ctx.translate(sx, sy);
+        ctx.scale(p.facing, 1);
+        ctx.drawImage(img, -pd.ax * sc, -(pd.h * sc) + (pd.h - pd.ay) * sc, pd.w * sc, pd.h * sc);
+      } else if (p.type === "fxanim") {
+        const idx = clamp((lifeT * p.frames.length) | 0, 0, p.frames.length - 1);
+        const fx = fxImg(p.frames[idx]);
+        if (fx) {
+          const s = (p.size * cam.zoom) / Math.max(fx.p.w, fx.p.h);
+          ctx.drawImage(fx.img, sx - fx.p.w * s / 2, sy - fx.p.h * s / 2, fx.p.w * s, fx.p.h * s);
+        } else {
+          // procedural starburst fallback
+          const r0 = p.size * cam.zoom * (0.3 + lifeT * 0.7) / 2;
+          ctx.translate(sx, sy);
+          ctx.fillStyle = idx < 2 ? "#fff7d1" : "#ffab3d";
+          ctx.beginPath();
+          for (let k = 0; k < 8; k++) {
+            const ang = k * Math.PI / 4 + lifeT;
+            const rr = k % 2 === 0 ? r0 : r0 * 0.4;
+            ctx.lineTo(Math.cos(ang) * rr, Math.sin(ang) * rr);
+          }
+          ctx.closePath(); ctx.fill();
+        }
+      } else if (p.type === "fx") {
+        const fx = fxImg(p.sprite);
+        if (fx) {
+          const s = (p.size * cam.zoom) / Math.max(fx.p.w, fx.p.h);
+          ctx.drawImage(fx.img, sx - fx.p.w * s / 2, sy - fx.p.h * s / 2, fx.p.w * s, fx.p.h * s);
+        } else {
+          // procedural hex-flash fallback
+          const r0 = p.size * cam.zoom * 0.5;
+          ctx.translate(sx, sy);
+          ctx.strokeStyle = "#9fe8ff"; ctx.lineWidth = 5;
+          ctx.beginPath();
+          for (let k = 0; k < 6; k++) {
+            const ang = k * Math.PI / 3;
+            ctx.lineTo(Math.cos(ang) * r0, Math.sin(ang) * r0);
+          }
+          ctx.closePath(); ctx.stroke();
         }
       }
-      ctx.font = font(15, true);
-      ctx.fillStyle = rgb(bp.accent);
-      ctx.fillText(`U  ${bp.ult}`, rightP.x + 24, rightP.y + 612);
-      ctx.font = font(13);
-      ctx.fillStyle = "rgb(177,188,210)";
-      ctx.fillText("P1: WASD 移动 · J/K 攻击 · U 必杀 · L 冲刺 · Space 防御 · M 静音", rightP.x + 24, rightP.y + 648);
-      if (this.mode === "versus") {
-        ctx.fillText("P2: 方向键移动 · , . 攻击 · / 必杀 · ' 冲刺 · 右Shift 防御", rightP.x + 24, rightP.y + 668);
-      }
+      ctx.restore();
     }
-    drawMatchIntro(ctx) {
-      ctx.fillStyle = "rgba(6,8,16,0.6)";
-      ctx.fillRect(0, 0, W, H);
-      const cw2 = 760, chh2 = 380;
-      const cx = W / 2 - cw2 / 2, cy = H / 2 - chh2 / 2;
-      ctx.fillStyle = rgb(this.player.bp.accent2, 0.2 + Math.abs(Math.sin(this.elapsed * 2)) * 0.17);
-      roundRect(ctx, cx - 12, cy - 12, cw2 + 24, chh2 + 24, 36); ctx.fill();
-      ctx.fillStyle = "rgba(16,20,32,0.93)";
-      roundRect(ctx, cx, cy, cw2, chh2, 28); ctx.fill();
-      ctx.strokeStyle = "rgba(248,223,178,0.85)";
-      ctx.lineWidth = 2;
-      roundRect(ctx, cx, cy, cw2, chh2, 28); ctx.stroke();
+  }
 
-      const introLabel = this.mode === "versus"
-        ? `双人对战 · ${this.stage.name}`
-        : `Arcade ${this.matchIndex + 1}/${S.arcadeMatches} · ${this.stage.name} · AI ${this.difficultyProfile().name}`;
-      strokedText(ctx, introLabel, W / 2, cy + 34, font(16, true), rgb(D.C.gold), 0);
-
-      // slam-in portraits
-      const t = clamp((S.matchIntroTime - this.matchIntroTimer) / 0.3, 0, 1);
-      const ease = 1 - Math.pow(1 - t, 3);
-      const pimg = this.player.head, oimg = this.opponent.head;
-      const slide = (1 - ease) * 320;
-      if (pimg && pimg.complete && pimg.naturalWidth > 0) ctx.drawImage(pimg, cx + 56 - slide, cy + 80, 200, 200);
-      if (oimg && oimg.complete && oimg.naturalWidth > 0) ctx.drawImage(oimg, cx + cw2 - 256 + slide, cy + 80, 200, 200);
-      strokedText(ctx, "VS", W / 2, cy + 185, font(72 * (0.6 + ease * 0.4), true), "rgb(247,246,241)", 9);
-      strokedText(ctx, this.player.bp.name, cx + 156, cy + 312, font(22, true), rgb(this.player.bp.accent2), 4);
-      strokedText(ctx, this.opponent.bp.name, cx + cw2 - 156, cy + 312, font(22, true), rgb(this.opponent.bp.accent2), 4);
-      strokedText(ctx, `"${this.opponent.bp.taunt}"`, W / 2, cy + 344, font(16), "rgb(220,226,240)", 0);
-      strokedText(ctx, `快扫档案 → ${this.opponent.bp.scan}`, W / 2, cy + 368, font(13), "rgb(150,200,160)", 0);
-    }
-    drawRoundOver(ctx) {
-      ctx.fillStyle = "rgba(5,8,14,0.32)";
-      ctx.fillRect(0, 0, W, H);
-      strokedText(ctx, this.banner.sub, W / 2, H / 2 + 56, font(24, true), "rgb(220,226,240)", 5);
-    }
-    drawCampaignOver(ctx) {
-      ctx.fillStyle = "rgba(4,6,12,0.74)";
-      ctx.fillRect(0, 0, W, H);
-      const winner = this.campaignWinner;
-      const cw2 = 660, chh2 = 420;
-      const cx = W / 2 - cw2 / 2, cy = 160;
-      ctx.fillStyle = rgb(winner.accent2, 0.2 + Math.abs(Math.sin(this.elapsed * 2)) * 0.16);
-      roundRect(ctx, cx - 12, cy - 12, cw2 + 24, chh2 + 24, 34); ctx.fill();
-      ctx.fillStyle = "rgba(16,20,32,0.94)";
-      roundRect(ctx, cx, cy, cw2, chh2, 28); ctx.fill();
-      ctx.strokeStyle = "rgba(248,223,178,0.85)";
-      ctx.lineWidth = 2;
-      roundRect(ctx, cx, cy, cw2, chh2, 28); ctx.stroke();
-
-      const header = this.mode === "versus"
-        ? (this.campaignWinnerIsP1 ? "P1 获胜!" : "P2 获胜!")
-        : (this.campaignVictory ? "街机通关!" : "挑战失败");
-      strokedText(ctx, header, W / 2, cy + 64, font(52, true),
-        this.campaignVictory ? "rgb(255,220,120)" : "rgb(247,246,241)", 8);
-      const img = this.heads[winner.key];
-      if (img && img.complete && img.naturalWidth > 0) ctx.drawImage(img, W / 2 - 70, cy + 96, 140, 140);
-      strokedText(ctx, winner.name, W / 2, cy + 262, font(26, true), rgb(winner.accent2), 5);
-      const line = this.campaignVictory ? winner.victory : "阶梯重置,再排一场反讽对决。";
-      strokedText(ctx, `"${line}"`, W / 2, cy + 296, font(16), "rgb(220,226,240)", 0);
-      if (this.mode === "arcade") {
-        // results block: score, grade, stats
-        const grade = this.scoreGrade();
-        const gradeColor = grade === "S" ? [255, 215, 90] : grade === "A" ? [88, 208, 230] : grade === "B" ? [116, 214, 146] : [177, 188, 210];
-        const isRecord = this.score > 0 && this.score >= this.highScore;
-        strokedText(ctx, `总分 ${this.score.toLocaleString()}${isRecord ? "  ★新纪录!" : ""}`, W / 2 - 60, cy + 336, font(20, true), rgb(D.C.gold), 4);
-        strokedText(ctx, grade, W / 2 + 200, cy + 345, font(58, true), rgb(gradeColor), 8);
-        strokedText(ctx, `最大连击 ${this.stats.maxCombo}  ·  总伤害 ${this.stats.damageDealt}  ·  PERFECT ×${this.stats.perfects}  ·  清场 ${this.arcadeClears}/${S.arcadeMatches}`,
-          W / 2, cy + 372, font(15, true), "rgb(177,188,210)", 0);
-      }
-      strokedText(ctx, "回车返回选人", W / 2, cy + 404, font(15, true), rgb(winner.accent), 0);
-    }
-    draw(ctx) {
-      const showBanner = this.state === "match_intro" || this.state === "round_intro" || this.state === "round_over";
-      this.backdrop.draw(ctx, this.elapsed, showBanner);
-
-      if (this.state === "title") {
-        this.drawTitle(ctx);
-        return;
-      }
-      if (this.state === "menu") {
-        this.drawMenu(ctx);
-        return;
-      }
-
-      // world under camera
+  function drawFloats() {
+    for (const t of floats) {
+      const sx = w2sx(t.x), sy = w2sy(t.y);
+      const a = 1 - Math.max(0, (t.age / t.life) * 1.2 - 0.2);
       ctx.save();
-      camera.apply(ctx);
-      for (const p of this.projectiles) p.draw(ctx);
-      if (this.player && this.opponent) {
-        this.player.draw(ctx, this);
-        this.opponent.draw(ctx, this);
-        this.killLine.draw(ctx, this.elapsed);
-      }
-      drawParticles(ctx, false);
-      ctx.globalCompositeOperation = "lighter";
-      drawParticles(ctx, true);
-      ctx.globalCompositeOperation = "source-over";
-      drawFloatTexts(ctx);
+      ctx.globalAlpha = clamp(a, 0, 1);
+      ctx.font = font(t.size);
+      ctx.textAlign = "center";
+      ctx.strokeStyle = "rgba(10,8,10,0.85)"; ctx.lineWidth = 6;
+      ctx.strokeText(t.text, sx, sy);
+      ctx.fillStyle = t.color;
+      ctx.fillText(t.text, sx, sy);
+      ctx.restore();
+    }
+  }
+
+  function drawBubbles() {
+    for (const b of bubbles) {
+      const f = b.f;
+      if (f.hidden) continue;
+      const sx = w2sx(f.x), sy = w2sy(f.y - f.h) - 46;
+      ctx.save();
+      const a = b.age < 8 ? b.age / 8 : b.age > b.life - 12 ? (b.life - b.age) / 12 : 1;
+      ctx.globalAlpha = clamp(a, 0, 1);
+      ctx.font = font(21);
+      const tw = ctx.measureText(b.text).width;
+      const bw = tw + 34, bh = 42;
+      let bx = clamp(sx - bw / 2, 8, W - bw - 8);
+      ctx.fillStyle = "rgba(252,250,244,0.96)";
+      roundRect(ctx, bx, sy - bh, bw, bh, 12);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(sx - 8, sy - 2); ctx.lineTo(sx + 8, sy - 2); ctx.lineTo(sx, sy + 10);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#20242e";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(b.text, bx + bw / 2, sy - bh / 2 + 1);
+      ctx.restore();
+    }
+  }
+
+  function drawHUD() {
+    const f1 = Game.f1, f2 = Game.f2;
+    const bw = 470, bh = 26, y = 30;
+    for (const [f, right] of [[f1, false], [f2, true]]) {
+      const x = right ? W - 40 - bw : 40;
+      ctx.save();
+      // frame
+      ctx.fillStyle = "rgba(12,12,18,0.72)";
+      roundRect(ctx, x - 6, y - 6, bw + 12, bh + 30, 8); ctx.fill();
+      // health
+      const pct = clamp(f.hp / f.maxHp, 0, 1);
+      ctx.fillStyle = "#2b2530";
+      ctx.fillRect(x, y, bw, bh);
+      const grad = ctx.createLinearGradient(x, 0, x + bw, 0);
+      grad.addColorStop(0, pct > 0.35 ? "#ffd76a" : "#ff6a6a");
+      grad.addColorStop(1, pct > 0.35 ? "#ff9d3c" : "#ff3c5c");
+      ctx.fillStyle = grad;
+      const wpx = bw * pct;
+      if (right) ctx.fillRect(x + bw - wpx, y, wpx, bh);
+      else ctx.fillRect(x, y, wpx, bh);
+      // guard gauge
+      const gbx = right ? x + bw * 0.4 : x;
+      ctx.fillStyle = "#20303c";
+      ctx.fillRect(gbx, y + bh + 4, bw * 0.6, 7);
+      ctx.fillStyle = f.guardGauge > 30 ? "#6ec4e8" : "#ff8484";
+      const gw = bw * 0.6 * (f.guardGauge / S.maxGuard);
+      if (right) ctx.fillRect(x + bw - gw, y + bh + 4, gw, 7);
+      else ctx.fillRect(x, y + bh + 4, gw, 7);
+      // name
+      ctx.font = font(19);
+      ctx.textAlign = right ? "right" : "left";
+      ctx.fillStyle = "#fff";
+      const label = (f.gold ? D.arcade.boss.name : `${f.data.name}·${f.data.epithet}`);
+      ctx.fillText(label, right ? x + bw : x, y + bh + 28);
       ctx.restore();
 
-      ctx.drawImage(vignette, 0, 0);
-
-      if (this.player && this.opponent) this.drawHud(ctx);
-      drawAnnouncer(ctx);
-
-      if (this.state === "match_intro") this.drawMatchIntro(ctx);
-      else if (this.state === "round_over") this.drawRoundOver(ctx);
-      else if (this.state === "campaign_over" && this.campaignWinner) this.drawCampaignOver(ctx);
-
-      if (this.paused) this.drawPaused(ctx);
-
-      // KO white flash on top of everything
-      if (this.koFlash > 0) {
-        ctx.fillStyle = `rgba(255,252,244,${(this.koFlash / 0.14) * 0.75})`;
-        ctx.fillRect(0, 0, W, H);
+      // meter
+      const my = H - 46, mw = 380;
+      const mx = right ? W - 40 - mw : 40;
+      ctx.save();
+      ctx.fillStyle = "rgba(12,12,18,0.72)";
+      roundRect(ctx, mx - 4, my - 4, mw + 8, 26, 6); ctx.fill();
+      const mpct = f.meter / S.maxMeter;
+      ctx.fillStyle = "#262233";
+      ctx.fillRect(mx, my, mw, 18);
+      const mg = ctx.createLinearGradient(mx, 0, mx + mw, 0);
+      mg.addColorStop(0, f.data.accent);
+      mg.addColorStop(1, f.data.accent2);
+      ctx.fillStyle = mg;
+      const mwpx = mw * mpct;
+      if (right) ctx.fillRect(mx + mw - mwpx, my, mwpx, 18);
+      else ctx.fillRect(mx, my, mwpx, 18);
+      if (mpct >= 1) {
+        ctx.font = font(17);
+        ctx.fillStyle = (frameNow / 8 | 0) % 2 ? "#fff" : f.data.accent2;
+        ctx.textAlign = right ? "right" : "left";
+        const hint = f.isAI ? "必杀 READY" : `必杀 READY (${right ? "/" : "O"})`;
+        ctx.fillText(hint, right ? mx + mw : mx, my - 10);
       }
-      // diagonal screen wipe on round/match transitions
-      if (this.wipe < 0.5) {
-        const tt = this.wipe / 0.5;
-        const ease = 1 - Math.pow(1 - tt, 2.4);
-        const bx2 = lerp(-620, W + 260, ease);
-        ctx.fillStyle = "rgba(8,10,18,0.92)";
+      ctx.restore();
+
+      // combo counter
+      if (f.combo.hits >= 2) {
+        ctx.save();
+        const cx = right ? W - 140 : 140;
+        ctx.font = font(52);
+        ctx.textAlign = "center";
+        ctx.strokeStyle = "rgba(10,8,10,0.9)"; ctx.lineWidth = 8;
+        ctx.strokeText(f.combo.hits + " 连", cx, 170);
+        ctx.fillStyle = f.data.accent2;
+        ctx.fillText(f.combo.hits + " 连", cx, 170);
+        ctx.restore();
+      }
+
+      // round pips
+      ctx.save();
+      for (let i = 0; i < S.roundsToWin; i++) {
+        const px = right ? W - 52 - i * 26 : 52 + i * 26;
         ctx.beginPath();
-        ctx.moveTo(bx2 + 160, 0); ctx.lineTo(bx2 + 460, 0);
-        ctx.lineTo(bx2 + 300, H); ctx.lineTo(bx2, H);
-        ctx.closePath(); ctx.fill();
-        ctx.strokeStyle = rgb(D.C.gold, 0.85);
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.moveTo(bx2 + 460, 0); ctx.lineTo(bx2 + 300, H);
-        ctx.stroke();
+        ctx.arc(px, y + bh + 44, 9, 0, TAU);
+        ctx.fillStyle = i < f.rounds ? f.data.accent : "rgba(255,255,255,0.15)";
+        ctx.fill();
       }
-    }
-    drawPaused(ctx) {
-      ctx.fillStyle = "rgba(5,8,14,0.72)";
-      ctx.fillRect(0, 0, W, H);
-      if (this.pauseMoves && this.player && this.opponent) {
-        strokedText(ctx, "招式表", W / 2, 70, font(40, true), "rgb(247,246,241)", 8);
-        const cols = [[this.player.bp, W / 2 - 600], [this.opponent.bp, W / 2 + 60]];
-        for (const [bp, x] of cols) {
-          ctx.fillStyle = "rgba(15,20,33,0.9)";
-          roundRect(ctx, x, 110, 540, 600, 22); ctx.fill();
-          ctx.strokeStyle = rgb(bp.accent, 0.8);
-          ctx.lineWidth = 2;
-          roundRect(ctx, x, 110, 540, 600, 22); ctx.stroke();
-          ctx.textAlign = "left";
-          ctx.textBaseline = "middle";
-          ctx.font = font(22, true);
-          ctx.fillStyle = rgb(bp.accent2);
-          ctx.fillText(bp.name, x + 24, 146);
-          const labels = { neutral: "J/K", up: "W+", down: "S+", left: "A+", right: "D+" };
-          let y = 192;
-          ctx.font = font(16, true);
-          ctx.fillStyle = "rgb(220,226,240)";
-          ctx.fillText("普攻 (J)", x + 24, y); ctx.fillText("技能 (K)", x + 290, y);
-          y += 32;
-          for (const d of DIRS) {
-            ctx.font = font(15);
-            ctx.fillStyle = "rgb(247,246,241)";
-            ctx.fillText(`${labels[d]}  ${bp.basics[d]}`, x + 24, y);
-            ctx.fillText(`${labels[d]}  ${bp.skills[d]}`, x + 290, y);
-            y += 34;
-          }
-          y += 12;
-          ctx.font = font(16, true);
-          ctx.fillStyle = rgb(bp.accent);
-          ctx.fillText(`U  必杀: ${bp.ult}`, x + 24, y);
-          y += 40;
-          ctx.font = font(14);
-          ctx.fillStyle = "rgb(177,188,210)";
-          ctx.fillText(bp.blurb, x + 24, y);
-        }
-        strokedText(ctx, "J 返回暂停菜单", W / 2, H - 60, font(16, true), "rgb(177,188,210)", 0);
-        return;
-      }
-      strokedText(ctx, "PAUSED", W / 2, H / 2 - 130, font(72, true), "rgb(247,246,241)", 9);
-      const lines = [
-        ["P", "继续游戏"],
-        ["J", "查看招式表"],
-        ["[ / ]", `音量  ${Math.round(AU.volume * 100)}%${AU.muted ? " (已静音)" : ""}`],
-        ["M", AU.muted ? "取消静音" : "静音"],
-        ["Esc", "返回主菜单"],
-      ];
-      let y = H / 2 - 50;
-      for (const [key, label] of lines) {
-        strokedText(ctx, key, W / 2 - 130, y, font(22, true), rgb(D.C.gold), 4);
-        ctx.textAlign = "left";
-        strokedText(ctx, label, W / 2 - 70, y, font(22), "rgb(247,246,241)", 4);
-        y += 46;
-      }
-      // volume bar
-      const vbx = W / 2 - 130, vby = y + 6;
-      ctx.fillStyle = "rgb(39,43,60)";
-      roundRect(ctx, vbx, vby, 280, 12, 6); ctx.fill();
-      ctx.fillStyle = AU.muted ? "rgb(100,105,125)" : rgb(D.C.gold);
-      if (AU.volume > 0) { roundRect(ctx, vbx + 1, vby + 1, 278 * AU.volume, 10, 5); ctx.fill(); }
+      ctx.restore();
     }
 
-    // ---------- input ----------
-    onKeyDown(e) {
-      AU.unlock();
-      AU.startMusic();
-      const code = e.code;
-      if (code === "KeyM") { AU.setMuted(!AU.muted); this.saveSettings(); return; }
-      if (this.state === "title") {
-        this.state = "menu";
-        AU.menuSelect();
-        return;
-      }
-      if (this.state === "menu") {
-        const p2Picking = this.mode === "versus" && this.menuPhase === 1;
-        const moveSel = (delta) => {
-          if (p2Picking) this.selected2 = (this.selected2 + delta + 9) % 9;
-          else this.selected = (this.selected + delta + 9) % 9;
-          AU.menuMove();
-        };
-        if (code === "KeyA" || code === "ArrowLeft") moveSel(-1);
-        else if (code === "KeyD" || code === "ArrowRight") moveSel(1);
-        else if (code === "KeyW" || code === "ArrowUp") moveSel(-3);
-        else if (code === "KeyS" || code === "ArrowDown") moveSel(3);
-        else if (code === "Digit1") { this.difficulty = 0; this.saveSettings(); }
-        else if (code === "Digit2") { this.difficulty = 1; this.saveSettings(); }
-        else if (code === "Digit3") { this.difficulty = 2; this.saveSettings(); }
-        else if (code === "KeyV") {
-          this.mode = this.mode === "arcade" ? "versus" : "arcade";
-          this.menuPhase = 0;
-          AU.menuMove();
-        }
-        else if (code === "Enter" || code === "Space") {
-          AU.menuSelect();
-          if (this.mode === "versus") {
-            if (this.menuPhase === 0) this.menuPhase = 1;
-            else { this.menuPhase = 0; this.startVersusMatch(); }
-          } else {
-            this.resetCampaign();
-          }
-        }
-        else if (code === "Escape" && p2Picking) this.menuPhase = 0;
-        return;
-      }
-      if (code === "Escape") {
-        // during a live match Esc opens pause first; quitting requires Esc while paused
-        if (this.state === "playing" && !this.paused) {
-          this.paused = true; this.pauseMoves = false;
-          return;
-        }
-        this.state = "menu"; this.paused = false; this.pauseMoves = false;
-        this.resetInputs();
-        return;
-      }
-      if (this.state === "campaign_over") {
-        if (code === "Enter" || code === "Space") this.state = "menu";
-        return;
-      }
-      if (code === "KeyP") { this.paused = !this.paused; this.pauseMoves = false; return; }
-      if (this.paused) {
-        if (code === "KeyJ") this.pauseMoves = !this.pauseMoves;
-        else if (code === "BracketLeft") { AU.setVolume(AU.volume - 0.1); this.saveSettings(); }
-        else if (code === "BracketRight") { AU.setVolume(AU.volume + 0.1); this.saveSettings(); }
-        return;
-      }
+    // timer
+    ctx.save();
+    ctx.font = font(56);
+    ctx.textAlign = "center";
+    ctx.strokeStyle = "rgba(10,8,10,0.9)"; ctx.lineWidth = 8;
+    const tt = String(Math.max(0, Game.timer));
+    ctx.strokeText(tt, W / 2, 72);
+    ctx.fillStyle = Game.timer <= 10 ? "#ff6a6a" : "#fff";
+    ctx.fillText(tt, W / 2, 72);
+    ctx.restore();
+  }
 
-      if (code === "KeyA") this.keys.left = true;
-      else if (code === "KeyD") this.keys.right = true;
-      else if (code === "KeyS") this.keys.down = true;
-      else if (code === "Space") { this.keys.guard = true; e.preventDefault(); }
-      else if (code === "KeyW") {
-        this.keys.up = true;
-        if (this.state === "playing") this.pendingJump = 0.10;
-      }
-      const vs = this.mode === "versus";
-      if (vs) {
-        if (code === "ArrowLeft") this.keys2.left = true;
-        else if (code === "ArrowRight") this.keys2.right = true;
-        else if (code === "ArrowDown") this.keys2.down = true;
-        else if (code === "ShiftRight") this.keys2.guard = true;
-        else if (code === "ArrowUp") {
-          this.keys2.up = true;
-          if (this.state === "playing") this.pendingJump2 = 0.10;
-        }
-      }
-      if (this.state !== "playing") return;
-      if (code === "KeyJ") this.playerAttack("basic");
-      else if (code === "KeyK") this.playerAttack("skill");
-      else if (code === "KeyU") this.playerAttack("ult");
-      else if (code === "KeyL" && this.player) {
-        if (this.player.dash()) this.setTicker(`${this.player.bp.name} 闪过了这条暴论。`, 1.1);
-      }
-      if (vs && this.opponent) {
-        if (code === "Comma") this.applyMove(this.opponent, this.opponent.useBasic(this.attackDirection(this.keys2)));
-        else if (code === "Period") this.applyMove(this.opponent, this.opponent.useSkill(this.attackDirection(this.keys2)));
-        else if (code === "Slash") this.applyMove(this.opponent, this.opponent.useUltimate());
-        else if (code === "Quote") this.opponent.dash();
-      }
+  function drawBanner() {
+    if (!banner) return;
+    const b = banner;
+    const t = b.age / b.life;
+    const scaleIn = b.age < 8 ? 1.8 - 0.8 * (b.age / 8) : 1;
+    const a = b.age > b.life - 16 ? (b.life - b.age) / 16 : 1;
+    ctx.save();
+    ctx.globalAlpha = clamp(a, 0, 1);
+    ctx.translate(W / 2, H / 2 - 60);
+    ctx.scale(scaleIn, scaleIn);
+    ctx.font = font(b.size);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.strokeStyle = "rgba(10,8,10,0.95)"; ctx.lineWidth = 14;
+    ctx.strokeText(b.text, 0, 0);
+    const g = ctx.createLinearGradient(0, -b.size / 2, 0, b.size / 2);
+    g.addColorStop(0, "#fff3c4");
+    g.addColorStop(1, "#ff9d3c");
+    ctx.fillStyle = g;
+    ctx.fillText(b.text, 0, 0);
+    if (b.sub) {
+      ctx.font = font(34);
+      ctx.strokeStyle = "rgba(10,8,10,0.9)"; ctx.lineWidth = 8;
+      ctx.strokeText(b.sub, 0, b.size * 0.72);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(b.sub, 0, b.size * 0.72);
     }
-    onKeyUp(e) {
-      const code = e.code;
-      if (code === "KeyA") this.keys.left = false;
-      else if (code === "KeyD") this.keys.right = false;
-      else if (code === "KeyS") this.keys.down = false;
-      else if (code === "Space") this.keys.guard = false;
-      else if (code === "KeyW") {
-        this.keys.up = false;
-        if (this.pendingJump > 0 && !this.paused && this.state === "playing" && this.player && this.player.jump()) {
-          this.pendingJump = 0;
-          this.player.vy *= 0.66; // tap = short hop
-        } else if (!this.paused && this.player && !this.player.onGround && this.player.vy < -220) {
-          this.player.vy *= 0.55; // release mid-rise = cut the jump
-        }
-      }
-      // keys2 must clear regardless of mode (avoids stuck keys after mode toggle)
-      if (code === "ArrowLeft") this.keys2.left = false;
-      else if (code === "ArrowRight") this.keys2.right = false;
-      else if (code === "ArrowDown") this.keys2.down = false;
-      else if (code === "ShiftRight") this.keys2.guard = false;
-      else if (code === "ArrowUp") {
-        this.keys2.up = false;
-        if (this.mode === "versus") {
-          if (this.pendingJump2 > 0 && !this.paused && this.state === "playing" && this.opponent && this.opponent.jump()) {
-            this.pendingJump2 = 0;
-            this.opponent.vy *= 0.66;
-          } else if (!this.paused && this.opponent && !this.opponent.onGround && this.opponent.vy < -220) {
-            this.opponent.vy *= 0.55;
-          }
-        }
-      }
+    ctx.restore();
+  }
+
+  function drawUltFlash() {
+    if (!Game.ultFlash) return;
+    const uf = Game.ultFlash;
+    ctx.save();
+    ctx.fillStyle = "rgba(6,4,10,0.72)";
+    ctx.fillRect(0, 0, W, H);
+    // dramatic character zoom
+    const f = uf.f;
+    const pd = poseData(f.charKey, "channel");
+    const img = ASSETS.img[pd.f];
+    const s = (H * 0.86) / pd.h;
+    const cx = f.side === 0 ? W * 0.32 : W * 0.68;
+    ctx.save();
+    ctx.translate(cx, H * 0.95);
+    ctx.scale(f.facing, 1);
+    if (f.gold) ctx.filter = "sepia(0.9) saturate(2.6) hue-rotate(-12deg) brightness(1.12)";
+    ctx.drawImage(img, -pd.ax * s, -pd.h * s, pd.w * s, pd.h * s);
+    ctx.restore();
+    // speed lines
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 14; i++) {
+      const ang = rand(0, TAU);
+      ctx.beginPath();
+      ctx.moveTo(W / 2 + Math.cos(ang) * 200, H / 2 + Math.sin(ang) * 120);
+      ctx.lineTo(W / 2 + Math.cos(ang) * 900, H / 2 + Math.sin(ang) * 560);
+      ctx.stroke();
     }
+    ctx.font = font(74);
+    ctx.textAlign = "center";
+    ctx.strokeStyle = "rgba(10,8,10,1)"; ctx.lineWidth = 12;
+    ctx.strokeText(uf.label, W / 2, H * 0.24);
+    ctx.fillStyle = "#ffd76a";
+    ctx.fillText(uf.label, W / 2, H * 0.24);
+    ctx.restore();
+  }
+
+  function drawPause() {
+    ctx.save();
+    ctx.fillStyle = "rgba(6,6,10,0.78)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center";
+    ctx.font = font(64);
+    ctx.fillStyle = "#fff";
+    ctx.fillText("暂停", W / 2, 150);
+    ctx.font = font(24, false);
+    ctx.fillStyle = "#cfcfe0";
+    const lines = Game.showMoves ? movesLines() : [
+      "P / Esc — 继续 · Esc(暂停中) — 回主菜单",
+      "J — 出招表",
+      "[ ] — 音量 · M — 静音",
+      "",
+      `AI 难度:${D.difficulties[Game.difficulty].name} (主菜单按 1/2/3 调整)`,
+    ];
+    lines.forEach((l, i) => ctx.fillText(l, W / 2, 230 + i * 40));
+    ctx.restore();
+  }
+  function movesLines() {
+    const f = Game.f1;
+    const k = f.data.kit;
+    return [
+      `${f.data.name} 出招表`,
+      "J — 普攻(可三连) · K — 重击(升龙/投技近身) · 空中J/K — 空袭",
+      `U — ${k.s1.label} · I — ${k.s2.label}`,
+      `O — 必杀「${k.ult.label}」(气满)`,
+      "双击方向 — 冲刺/后撤(无敌帧) · W — 跳 · 后方向 — 防御",
+      "T — 嘲讽(纯整活)",
+    ];
+  }
+
+  // ---------- scene renders ----------
+  function drawLoading() {
+    ctx.fillStyle = "#0c0c14";
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center";
+    ctx.font = font(40);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(Game.loadError ? "资源加载失败" : "加载中……", W / 2, H / 2 - 40);
+    if (Game.loadError) {
+      ctx.font = font(20, false);
+      ctx.fillStyle = "#ff8484";
+      ctx.fillText(String(Game.loadError), W / 2, H / 2 + 10);
+    } else {
+      ctx.fillStyle = "#2b2530";
+      ctx.fillRect(W / 2 - 250, H / 2, 500, 16);
+      ctx.fillStyle = "#ffd76a";
+      ctx.fillRect(W / 2 - 250, H / 2, 500 * Game.loadProgress, 16);
+    }
+  }
+
+  let titleT = 0;
+  function drawTitle() {
+    titleT += logicSteps;
+    ctx.fillStyle = "#0a0a12";
+    ctx.fillRect(0, 0, W, H);
+    // faint stage
+    const st = ASSETS.img[(ASSETS.manifest.stages || {}).studio];
+    if (st) {
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.drawImage(st, 0, 0, W, H);
+      ctx.restore();
+    }
+    ctx.fillStyle = "rgba(8,6,14,0.5)";
+    ctx.fillRect(0, 0, W, H);
+
+    // the two stars
+    for (const [ck, x, flip] of [["chen", W * 0.16, 1], ["zhang", W * 0.84, -1]]) {
+      const pd = poseData(ck, "idle");
+      const img = ASSETS.img[pd.f];
+      const s = (H * 0.62) / pd.h;
+      ctx.save();
+      ctx.translate(x, H * 0.98 + Math.sin(titleT * 0.03) * 6);
+      ctx.scale(flip, 1);
+      ctx.drawImage(img, -pd.ax * s, -pd.h * s, pd.w * s, pd.h * s);
+      ctx.restore();
+    }
+
+    // logo
+    const lg = ASSETS.manifest.logo ? ASSETS.img[ASSETS.manifest.logo] : null;
+    if (lg) {
+      const lw = Math.min(600, W * 0.47);
+      const lh = lw * lg.height / lg.width;
+      ctx.drawImage(lg, W / 2 - lw / 2, 48 + Math.sin(titleT * 0.02) * 4, lw, lh);
+    } else {
+      ctx.font = font(110);
+      ctx.textAlign = "center";
+      ctx.strokeStyle = "#1a1418"; ctx.lineWidth = 16;
+      ctx.strokeText("梗图格斗", W / 2, 190);
+      ctx.fillStyle = "#ffd76a";
+      ctx.fillText("梗图格斗", W / 2, 190);
+    }
+    ctx.textAlign = "center";
+    ctx.font = font(30);
+    ctx.strokeStyle = "rgba(10,8,10,0.8)"; ctx.lineWidth = 7;
+    ctx.strokeText("陈平 VS 张维为 · KOF 梗图版", W / 2, H * 0.5);
+    ctx.fillStyle = "#fff";
+    ctx.fillText("陈平 VS 张维为 · KOF 梗图版", W / 2, H * 0.5);
+
+    if ((titleT / 40 | 0) % 2 === 0) {
+      ctx.font = font(32);
+      ctx.fillStyle = "#ffd76a";
+      ctx.fillText("按任意键 — 街机模式 · 按 V — 双人对战", W / 2, H * 0.72);
+    }
+    ctx.font = font(20, false);
+    ctx.fillStyle = "#9a9ab0";
+    ctx.fillText(`1/2/3 选 AI 难度(当前:${D.difficulties[Game.difficulty].name}) · 本作为梗图恶搞 Parody`, W / 2, H * 0.8);
+    ctx.fillText("P1: WASD+JKUIO · P2: 方向键+,./;'", W / 2, H * 0.86);
+  }
+
+  function drawSelect() {
+    ctx.fillStyle = "#0a0a12";
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = font(44);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#fff";
+    ctx.fillText(Game.mode === "arcade" ? "选择你的辩手" : "双人对战 · 各自选人", W / 2, 66);
+
+    const cols = 3, cw = 240, chh = 250, gx = W / 2 - (cols * cw) / 2, gy = 110;
+    D.ROSTER.forEach((ck, i) => {
+      const col = i % cols, row = (i / cols) | 0;
+      const x = gx + col * cw, y = gy + row * chh;
+      const c = D.fighters[ck];
+      const mfc = ASSETS.manifest.chars[ck];
+      ctx.save();
+      // card bg
+      const sel0 = Game.selIdx[0] === i, sel1 = Game.mode === "versus" && Game.selIdx[1] === i;
+      ctx.fillStyle = sel0 || sel1 ? "rgba(40,36,52,0.95)" : "rgba(22,20,30,0.9)";
+      roundRect(ctx, x + 8, y + 8, cw - 16, chh - 16, 14);
+      ctx.fill();
+      if (sel0) { ctx.strokeStyle = "#ffd76a"; ctx.lineWidth = 4; ctx.stroke(); }
+      if (sel1) { ctx.strokeStyle = "#6ce4ff"; ctx.lineWidth = 4; roundRect(ctx, x + 12, y + 12, cw - 24, chh - 24, 12); ctx.stroke(); }
+      // portrait
+      const pf = mfc.portrait ? ASSETS.img[mfc.portrait] : null;
+      if (pf) {
+        const ps = (chh - 110) / pf.height;
+        ctx.drawImage(pf, x + cw / 2 - pf.width * ps / 2, y + 20, pf.width * ps, pf.height * ps);
+      }
+      ctx.font = font(26);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(`${c.name}·${c.epithet}`, x + cw / 2, y + chh - 58);
+      ctx.font = font(17, false);
+      ctx.fillStyle = c.accent2;
+      ctx.fillText(c.archetype, x + cw / 2, y + chh - 32);
+      ctx.restore();
+    });
+
+    ctx.font = font(20, false);
+    ctx.fillStyle = "#9a9ab0";
+    const p1c = D.fighters[D.ROSTER[Game.selIdx[0]]];
+    ctx.fillText(
+      Game.mode === "arcade"
+        ? "WASD 移动 · J 确认 · Esc 返回"
+        : `P1: WASD+J ${Game.selDone[0] ? "✓" : ""} · P2: 方向键+, ${Game.selDone[1] ? "✓" : ""} · Esc 返回`,
+      W / 2, H - 30);
+  }
+
+  function drawVs() {
+    Game.vsT += logicSteps;
+    const v = Game.vsData;
+    ctx.fillStyle = "#0a0a12";
+    ctx.fillRect(0, 0, W, H);
+    const t = Math.min(1, Game.vsT / 30);
+    for (const [ck, side] of [[v.p1, 0], [v.p2, 1]]) {
+      const mfc = ASSETS.manifest.chars[ck];
+      const pf = mfc.portrait ? ASSETS.img[mfc.portrait] : null;
+      const targetX = side === 0 ? W * 0.27 : W * 0.73;
+      const x = lerp(side === 0 ? -300 : W + 300, targetX, 1 - Math.pow(1 - t, 3));
+      if (pf) {
+        const s = (H * 0.66) / pf.height;
+        ctx.save();
+        if (side === 1) { ctx.translate(x, 0); ctx.scale(-1, 1); ctx.translate(-x, 0); }
+        if (side === 1 && v.gold) ctx.filter = "sepia(0.9) saturate(2.6) hue-rotate(-12deg) brightness(1.12)";
+        ctx.drawImage(pf, x - pf.width * s / 2, H * 0.2, pf.width * s, pf.height * s);
+        ctx.restore();
+      }
+      const c = D.fighters[ck];
+      ctx.font = font(40);
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#fff";
+      ctx.fillText(side === 1 && v.gold ? D.arcade.boss.name : `${c.name}·${c.epithet}`, targetX, H * 0.16);
+    }
+    ctx.font = font(150);
+    ctx.textAlign = "center";
+    ctx.strokeStyle = "#1a1418"; ctx.lineWidth = 18;
+    ctx.strokeText("VS", W / 2, H * 0.58);
+    ctx.fillStyle = "#ff5d7e";
+    ctx.fillText("VS", W / 2, H * 0.58);
+    if (Game.mode === "arcade") {
+      ctx.font = font(26);
+      ctx.fillStyle = "#9a9ab0";
+      const idx = Game.arcadeIdx + 1, total = Game.arcadeOrder.length;
+      ctx.fillText(v.gold ? "最终BOSS" : `街机阶梯 ${idx}/${total}`, W / 2, H * 0.72);
+    }
+    if (Game.vsT > 40 && (Game.vsT / 30 | 0) % 2 === 0) {
+      ctx.font = font(24);
+      ctx.fillStyle = "#ffd76a";
+      ctx.fillText("按任意键开始", W / 2, H * 0.85);
+    }
+    if (Game.vsT > 150) Game.launchVsMatch();
+  }
+
+  function drawResults() {
+    Game.resultT += logicSteps;
+    ctx.fillStyle = "#0a0a12";
+    ctx.fillRect(0, 0, W, H);
+    const wnr = Game.matchWinner;
+    const mfc = ASSETS.manifest.chars[wnr.charKey];
+    const pf = mfc.portrait ? ASSETS.img[mfc.portrait] : null;
+    if (pf) {
+      const s = (H * 0.72) / pf.height;
+      ctx.save();
+      if (wnr.gold) ctx.filter = "sepia(0.9) saturate(2.6) hue-rotate(-12deg) brightness(1.12)";
+      ctx.drawImage(pf, W * 0.5 - pf.width * s / 2, H * 0.16, pf.width * s, pf.height * s);
+      ctx.restore();
+    }
+    ctx.font = font(56);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd76a";
+    const nm = wnr.gold ? D.arcade.boss.name : `${wnr.data.name}·${wnr.data.epithet}`;
+    ctx.fillText(`${nm} 获胜`, W / 2, 100);
+    if (Game.perfectWholeMatch) { /* reserved */ }
+    ctx.font = font(30);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(`「${Game.resultQuote}」`, W / 2, H * 0.82);
+    ctx.font = font(22, false);
+    ctx.fillStyle = "#9a9ab0";
+    ctx.fillText(`败者:「${Game.resultLoseQuote}」`, W / 2, H * 0.88);
+    if (Game.resultT > 60) {
+      ctx.font = font(24);
+      ctx.fillStyle = "#ffd76a";
+      ctx.fillText("按任意键继续", W / 2, H * 0.95);
+    }
+  }
+
+  function drawEnding() {
+    Game.resultT += logicSteps;
+    ctx.fillStyle = "#0a0a12";
+    ctx.fillRect(0, 0, W, H);
+    if (logicSteps > 0 && Game.resultT % 6 < logicSteps) FX.confetti(rand(100, S.stageW - 100), rand(0, 200));
+    updateParticles(logicSteps * STEP);
+    drawParticles();
+    ctx.font = font(72);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd76a";
+    ctx.fillText("通关!", W / 2, H * 0.3);
+    ctx.font = font(34);
+    ctx.fillStyle = "#fff";
+    ctx.fillText("互联网嘴仗之王已加冕", W / 2, H * 0.42);
+    const pc = Game.playerChar ? D.fighters[Game.playerChar] : null;
+    if (pc) {
+      ctx.font = font(28);
+      ctx.fillStyle = pc.accent2;
+      ctx.fillText(`「${pick(pc.quotes.win)}」`, W / 2, H * 0.55);
+    }
+    ctx.font = font(22, false);
+    ctx.fillStyle = "#9a9ab0";
+    ctx.fillText("按 Esc 回到主菜单 · 本作为梗图恶搞,致敬所有活跃的互联网嘴替", W / 2, H * 0.8);
+  }
+
+  // ---------- main loop ----------
+  let acc = 0, lastTs = 0;
+  const STEP = 1 / 60;
+
+  let logicSteps = 0;   // fixed steps granted this rAF — flow timers advance by this
+  function frame(ts) {
+    requestAnimationFrame(frame);
+    if (!lastTs) lastTs = ts;
+    let el = Math.min(0.1, (ts - lastTs) / 1000);
+    lastTs = ts;
+
+    // fixed-step accumulator drives ALL scene timers (frame-rate independent)
+    acc += el;
+    logicSteps = 0;
+    while (acc >= STEP && logicSteps < 4) {
+      if (Game.scene === "fight") fightUpdate(STEP);
+      acc -= STEP; logicSteps++;
+    }
+    if (acc >= STEP) acc = 0;   // drop backlog when the step cap was hit
+
+    if (Game.scene === "boot") { drawLoading(); return; }
+    if (Game.scene === "title") { drawTitle(); return; }
+    if (Game.scene === "select") { drawSelect(); return; }
+    if (Game.scene === "vs") { drawVs(); return; }
+    if (Game.scene === "results") { drawResults(); return; }
+    if (Game.scene === "ending") { drawEnding(); return; }
+
+    // render
+    ctx.clearRect(0, 0, W, H);
+    drawStage();
+    drawFields();
+    drawUltOverlays();
+    const order = [Game.f1, Game.f2].sort((a, b) =>
+      (a.state === "attack" || a.state === "ult" ? 1 : 0) - (b.state === "attack" || b.state === "ult" ? 1 : 0));
+    drawPose(order[0]); drawPose(order[1]);
+    drawProjectiles();
+    drawParticles();
+    drawFloats();
+    drawBubbles();
+    drawHUD();
+    drawBanner();
+    drawUltFlash();
+    if (Game.paused) drawPause();
   }
 
   // ---------- boot ----------
-  const canvas = document.getElementById("game");
-  const ctx = canvas.getContext("2d", { alpha: false });
-
-  function resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
-    canvas.style.width = `${W * scale}px`;
-    canvas.style.height = `${H * scale}px`;
-    canvas.width = Math.round(W * scale * dpr);
-    canvas.height = Math.round(H * scale * dpr);
-    ctx.setTransform((scale * dpr), 0, 0, (scale * dpr), 0, 0);
-  }
-  window.addEventListener("resize", resize);
-  resize();
-
-  const headImages = {};
-  let loaded = 0;
-  const total = D.fighters.length;
-  for (const f of D.fighters) {
-    const img = new Image();
-    img.src = `assets/web/${f.key}_head.png`;
-    img.onload = () => { loaded += 1; };
-    img.onerror = () => { loaded += 1; };
-    headImages[f.key] = img;
-  }
-
-  const game = new Game(headImages);
-  window.__game = game; // playtest hook
-  window.addEventListener("keydown", (e) => {
-    if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash", "Quote"].includes(e.code)) e.preventDefault();
-    game.onKeyDown(e);
-  });
-  window.addEventListener("keyup", (e) => game.onKeyUp(e));
-
-  // fixed 60Hz timestep with accumulator
-  const STEP = 1000 / 60;
-  let acc = 0, last = performance.now();
-  function frame(now) {
-    requestAnimationFrame(frame);
-    acc += Math.min(now - last, 250);
-    last = now;
-    while (acc >= STEP) {
-      game.update(STEP / 1000);
-      acc -= STEP;
-    }
-    if (acc > 1000) acc = 0;
-    ctx.save();
-    game.draw(ctx);
-    ctx.restore();
-    if (loaded < total) {
-      ctx.fillStyle = "rgba(10,12,20,0.6)";
-      ctx.fillRect(0, 0, W, H);
-      strokedText(ctx, `加载头像 ${loaded}/${total}…`, W / 2, H / 2, font(28, true), "rgb(247,246,241)", 5);
-    }
-  }
+  loadAssets(p => { Game.loadProgress = p; })
+    .then(() => { Game.scene = "title"; })
+    .catch(err => { Game.loadError = err.message; });
   requestAnimationFrame(frame);
 })();
