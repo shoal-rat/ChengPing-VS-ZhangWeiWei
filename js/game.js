@@ -428,6 +428,7 @@
           this.x += this.vx * dt; this.y += this.vy * dt;
           if (this.y >= FLOOR && this.vy > 0) {
             this.y = FLOOR;
+            this.airborne = false;
             if (this.hp <= 0) { this.enterKO(); break; }
             this.vy = 0; this.vx = 0;
             this.setState("knockdown"); this.invuln = 40;
@@ -453,7 +454,13 @@
           if (g.state !== "throwing" && !(g.state === "special" && g.move)) this.setState("idle");
           break;
         }
-        case "ranbu_victim": this.vx = 0; break;
+        case "ranbu_victim": {
+          this.vx = 0;
+          // safety: release if the attacker's ult ended without launching us
+          // (e.g. golden armor absorbed the finisher)
+          if (this.opp.state !== "ult") this.setState("idle");
+          break;
+        }
         case "taunt": {
           if (this.stateT >= 55) this.setState("idle");
           break;
@@ -634,8 +641,10 @@
       const m = this.move, o = this.opp;
       if (this.moveFrame === m.startup) {
         const dist = Math.abs(this.x - o.x);
-        if (dist < S.throwRange + this.w && !o.airborne && !o.invuln && !o.ko) {
+        if (dist < S.throwRange + this.w && !o.airborne && !o.invuln && !o.ko &&
+            o.state !== "ult" && o.armorT <= 0) {
           m.connected = true;
+          o.move = null; o.chain = 0;
           o.setState("grabbed");
           o.facing = -this.facing;
           AU.sfx("throwgrab");
@@ -716,9 +725,9 @@
         AU.sfx("just_guard");
         FX.guardSpark(def.x + 40 * def.facing * -1, def.y - def.h * 0.55, true);
         floatText(def.x, def.y - def.h - 26, "极限招架!", "#9fe8ff", 26);
-        // 马保国 trait: 接化发 counter
+        // 马保国 trait: 接化发 counter (never grabs an attacker mid-ult)
         const ct = def.data.kit.counter;
-        if (ct && def.cds.counter <= 0 && !atk.airborne && !m.proj) {
+        if (ct && def.cds.counter <= 0 && !atk.airborne && !m.proj && atk.state !== "ult") {
           def.cds.counter = ct.cd;
           doJieHuaFa(def, atk, ct);
           return;
@@ -738,6 +747,7 @@
       hitstop = Math.max(hitstop, 3);
       if (def.guardGauge <= 0) {
         def.guardGauge = 0;
+        def.move = null; def.chain = 0;
         def.setState("crumple");
         floatText(def.x, def.y - def.h - 30, "破防!", "#ff8484", 34);
         AU.sfx("guard_break");
@@ -761,6 +771,8 @@
     }
     def.victimCombo++;
     if (m.kind === "light") atk.chainOK = true;
+    // interrupt whatever the defender was doing (dangling selfMove moves break integration)
+    def.move = null; def.chain = 0; def.chainOK = false;
     const scale = Math.max(S.comboScaleFloor, 1 - S.comboScaleStep * (def.victimCombo - 1));
     const dmg = Math.max(1, Math.round(m.dmg * scale));
     def.hp -= dmg;
@@ -1040,7 +1052,8 @@
         if (t < 26 && !f.ranbuHit) {
           f.x += 1050 * f.facing * dt;
           if (t % 2 === 0) FX.afterimage(f);
-          if (Math.abs(o.x - f.x) < 130 && !o.invuln && !o.ko) {
+          // respect ko, ult hyper-armor and golden armor: no lock-on
+          if (Math.abs(o.x - f.x) < 130 && !o.invuln && !o.ko && o.state !== "ult" && o.armorT <= 0) {
             f.ranbuHit = true; f.ranbuT0 = t;
             o.setState("ranbu_victim");
             hitstop = 10;
@@ -1049,13 +1062,13 @@
         }
         if (f.ranbuHit) {
           const rt = t - f.ranbuT0;
-          if (rt > 0 && rt < 64 && rt % 8 === 0) {
+          if (rt > 0 && rt < 64 && rt % 8 === 0 && !o.ko) {
             f.ultPose = pick(["jab", "sweep", "smash", "cast"]);
             o.x = clamp(f.x + 110 * f.facing, S.wallPad + 60, S.stageW - S.wallPad - 60);
             applyHit(f, o, { dmg: Math.round(f.ultScript.base * 6 / 54), kind: "light", ult: true, knockback: 30, launch: 0, range: 200 });
-            o.setState("ranbu_victim");
+            if (!o.ko) o.setState("ranbu_victim");
           }
-          if (rt === 70) {
+          if (rt === 70 && !o.ko) {
             f.ultPose = "uppercut";
             applyHit(f, o, { dmg: Math.round(f.ultScript.base * 12 / 54), kind: "heavy", ult: true, knockback: 420, launch: -820, range: 220 });
             shake(0.7);
@@ -1205,7 +1218,8 @@
     stageKey: "studio",
     round: 1, timer: S.roundTime, timerAcc: 0,
     arcadeIdx: 0, arcadeOrder: [], perfectPending: false,
-    difficulty: +(localStorage.getItem("mf_diff") || 1),
+    difficulty: [0, 1, 2].includes(parseInt(localStorage.getItem("mf_diff"), 10))
+      ? parseInt(localStorage.getItem("mf_diff"), 10) : 1,
     selIdx: [0, 1], selDone: [false, false],
     paused: false, showMoves: false,
     ultBeam: null, pillar: null,
