@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>动作预览</title>
+<style>@font-face{font-family:"Smiley Sans";src:url("../assets/fonts/smiley.woff2")}body{margin:0;background:#2a2340;color:#fff;font-family:sans-serif}canvas{display:block}</style>
+</head><body><canvas id="c"></canvas>
+<script type="module">
+import { loadAll, IMG, DATA } from "../src/engine/assets.js";
+import { CHARS } from "../src/data/chars/index.js";
+import { solveRig, newJoints, hurtCapsules, bonePoint } from "../src/sim/rig.js";
+import { samplePose, copyPose } from "../src/sim/anim.js";
+import { drawBody } from "../src/render/fighterDraw.js";
+const q = new URLSearchParams(location.search);
+const ids = (q.get("c") || "chen") === "all" ? Object.keys(CHARS) : (q.get("c") || "chen").split(",");
+const id = ids[0];
+const only = q.get("m") ? q.get("m").split(",") : null;
+const scale = parseFloat(q.get("s") || "1.3");
+const cols = parseInt(q.get("cols") || "6");
+const freeze = q.get("f") != null ? parseInt(q.get("f")) : null;
+const list = [["json","heads","../assets/heads/heads.json"], ...ids.map((c) => ["img","head_"+CHARS[c].look.head,`../assets/heads/${CHARS[c].look.head}.webp`])];
+await loadAll(list);
+const def = CHARS[id];
+const cells = [];
+for (const c of ids) for (const m of (only || ["_idle", ...Object.keys(CHARS[c].moves)])) cells.push([c, m]);
+const moves = cells;
+const cw = 240 * scale, chh = 250 * scale;
+const cv = document.getElementById("c");
+const rows = Math.ceil(moves.length / cols);
+cv.width = cw * cols; cv.height = chh * rows;
+const g = cv.getContext("2d");
+const j = newJoints(); const P = { ...def.base };
+let t = 0;
+function frame() {
+  g.fillStyle = "#3a3358"; g.fillRect(0, 0, cv.width, cv.height);
+  moves.forEach(([cid, m], i) => {
+    const def = CHARS[cid];
+    const cx = (i % cols) * cw + cw / 2, cy = Math.floor(i / cols) * chh + chh * 0.78;
+    g.save(); g.translate(cx, cy); g.scale(scale, scale);
+    g.strokeStyle = "#5a5280"; g.lineWidth = 2; g.beginPath(); g.moveTo(-100, 0); g.lineTo(100, 0); g.stroke();
+    let mf = 0, mv = def.moves[m];
+    if (mv) { const dur = mv.dur + 12; mf = freeze != null ? freeze : (t % dur); if (mf > mv.dur) mf = mv.dur; samplePose(mv._anim, mf, P); }
+    else copyPose(def.base, P);
+    solveRig(def.body, P, !(mv && mv.aerial), j);
+    drawBody(g, def, j, P, { item: null }, {});
+    if (mv && mv.hb) for (const h of mv.hb) if (mf >= h.f[0] && mf <= h.f[1]) { const b = bonePoint(j, h.bone || "ctr"); g.fillStyle = "rgba(255,40,40,0.45)"; g.beginPath(); g.arc(b[0] + (h.x||0), b[1] + (h.y||0), h.r, 0, 7); g.fill(); }
+    g.restore();
+    g.fillStyle = "#fff"; g.font = "bold 14px sans-serif"; g.fillText(cid + " " + m + (mv ? `  ${mf}/${mv.dur}` : ""), (i % cols) * cw + 8, Math.floor(i / cols) * chh + 18);
+  });
+  if (freeze == null) t++;
+  requestAnimationFrame(frame);
+}
+frame();
+</script></body></html>

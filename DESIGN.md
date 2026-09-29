@@ -1,53 +1,32 @@
-# 梗图格斗 2.0 — Total Redev Design
+# 设计笔记
 
-## Diagnosis of the old build
-- Photo heads were 256px blurry circle cutouts glued on ~90px procedurally-drawn stick bodies → unreadable, ugly.
-- Projectiles were literal text pills ("安卓", "税单") floating on a dark empty screen.
-- 9 fighters, most of them redundant "版本" splits of the same person, each shallow.
-- Systems bloat (guard heat, execution lines, scan lines) without core feel: no weight, no impact.
+## 核心手感
 
-## New direction
+- 逻辑 60 帧/秒，所有招式按帧设计：发生、持续、硬直、可取消帧（IASA）、落地硬直、自动取消窗口。
+- 击飞公式沿用大乱斗系：`KB = ((p/10 + p·d/20) · 200/(w+100) · 1.4 + 18) · kbg/100 + bkb`，发射速度 `KB × 0.25` 像素/帧、每帧衰减 0.6，硬直 `KB × 0.4` 帧，KB ≥ 80 进入翻滚。
+- 同一招在最近 9 次命中里出现得越多伤害越低（首次使用有 5% 加成），逼玩家换招。
+- DI：被打飞时按住方向，发射角最多偏转 15°。受身窗口 20 帧。
+- 护盾 50 点，持续按住会消耗；刚开盾 5 帧内被打算完美格挡，攻击方额外僵直 14 帧；盾碎晕眩，按键可以挣脱。
+- 抓边给 30 帧无敌（落地前再抓不给），可被后来者挤下去；抓边后可以起身、跳、翻滚、攻击或松手。
 
-### Art: full AI generation, KOF style (v3 — supersedes the sticker plan)
-- Every fighter is drawn by an AI image generator in **KOF XIII hand-drawn arcade style**,
-  full body, from the reference photos: two 2×4 green-screen pose sheets per character
-  (idle/walk/jab/uppercut/guard/jump/hit/defeat + cast/smash/dash/sweep/win/taunt/channel/flykick),
-  plus a dramatic select-screen bust portrait.
-- Stages (演播室 / 讲堂 / 东百夜市), props and the logo are AI-generated too
-  (Codex CLI image tool primary, Pollinations fallback).
-- `pipeline/build_assets.py` chroma-keys, slices by connected components, computes feet anchors,
-  and packs `assets/game/` + `manifest.json` — the engine only ever loads baked PNGs.
-- Animation life comes from the engine: squash & stretch, lean, hitstop, afterimages, particles.
+## 斩杀线
 
-### Roster (6 fighters, all distinct archetypes)
+每局开始时，用一记标准重击（16%、40°、bkb 30、kbg 102，在距边缘 1/6 舞台处命中、带防御性 DI）模拟每个角色在当前舞台的阵亡 %，二分查找得到斩杀线，显示在 HUD 上。
+任何命中在结算时都会预测击飞轨迹，会出界的触发斩杀特写（慢放、推镜、红色斩击线）。
+带 `execute` 的判定（牢A的蓄力技、斩杀线、终极技）对斩杀线内的目标保底给到足以出界的击飞。
 
-| # | Fighter | Archetype | Kit |
-|---|---------|-----------|-----|
-| 1 | 陈平 | Zoner | L 麦克风戳 · H 宏观上勾拳 · S1 水饺导弹(arc) · S2 跑步进入小康(dash) · ULT 陈平不等式 ¥2000>$3000 巨型光束 |
-| 2 | 张维为 | Counter/caster | L 指点江山掌 · H 精装书砸(《这就是中国》) · S1 西方震撼波 · S2 「这就是一种自信」反弹结界 · ULT 中国人你要自信(金色聚光灯+弹幕) |
-| 3 | 胡锡进 | Mid-range pressure | L 键盘连打 · H 保温杯抡 · S1 社评飞盘(boomerang, 回程"叼盘成功") · S2 「复杂化」减速场 · ULT A股天谴(绿色K线雨) |
-| 4 | 峰哥 | Rushdown | L 王八拳 · H 大耳瓜子 · S1 东百锐评(音波锥) · S2 亡命天涯(穿身位移) · ULT 压抑爆发(狂暴buff) |
-| 5 | 户晨风 | Skirmisher | L 自拍杆抽 · H 三脚架砸 · S1 手机测评(iPhone直线快弹/安卓抛物慢弹交替) · S2 账号转世(封禁牌遮身+背后重现) · ULT 优质人类认证(苹果审判光柱) |
-| 6 | 马保国 | Grappler/parry boss | L 五连鞭段 · H 接化发(command counter) · S1 闪电鞭(whip projectile) · S2 偷袭(不讲武德 teleport behind) · ULT 闪电五连鞭(全屏五段) · 受击台词「大意了没有闪」 |
+## 道具
 
-Arcade final boss: **金色传说·马保国** (gold palette + aura, +30% stats).
+- 热搜「爆」：3 击打爆，打爆的人获得终极技。
+- 快递箱：打爆随机开箱，效果直接给打爆的人。
+- 板砖、大瓜、键盘：拿在手里时攻击键投掷 / 挥击；大瓜落地一段时间或被打会爆炸。
 
-### Core mechanics (fewer, deeper, tuned for feel)
-- 1280×720 canvas, fixed 60Hz timestep, interpolated render.
-- Movement: walk, dash (fwd)/backdash (i-frames), jump w/ air control, fast-fall.
-- Offense: Light (chain ×3) → Heavy (launcher/knockdown) cancel; 2 specials on cooldown; ULT on full meter.
-- Defense: hold-back guard w/ chip + guard gauge; **just-guard** (8f) refunds meter; 张维为/胡锡进/马保国 get kit reflects/counters.
-- Meter: build on hit/whiff/being-hit; ULT = cinematic freeze + banner quote.
-- Juice: hitstop (2–8f by damage), trauma screenshake, impact particles + dust, damage popups,
-  combo counter with meme ranks (3+ 有点东西 / 5+ 整活成功 / 8+ 赢麻了 / 12+ 遥遥领先!), KO slow-mo punch-in, PERFECT = 「毫发无损」.
-- AI: 3 difficulties; per-character personality (zoner/turtle/rushdown/grappler); reaction-delay based, no input reading.
-- Modes: Arcade (3 matches + 马保国 boss, score + grade), Versus local 2P, best-of-3 rounds.
-- Audio: WebAudio synth (punchy noise-burst hits, sub thump, per-stage pentatonic BGM loop) — zero audio files.
+## 电脑
 
-### Meme quote pools (intro / hit / win / lose per character)
-陈平: 「美国人民生活在水深火热之中」「¥2000比$3000过得好」…
-张维为: 「我走过一百多个国家」「西方,震撼!」「我觉得这就是一种自信」…
-胡锡进: 「事情是复杂的」「老胡认为要冷静」「2800点以下遍地黄金」…
-峰哥: 「兄弟你这是压抑了」「东百往事」…
-户晨风: 「用什么手机?说」「祝你早日用上苹果」「唉,安卓」…
-马保国: 「年轻人不讲武德」「耗子尾汁」「大意了啊,没有闪」「接!化!发!」…
+电脑有 1–9 级，差别在反应延迟（34→7 帧）、防御率、受身率、DI、复活路线、抢道具积极性。
+每个角色在数据里写了战术提示（远程飞行道具、反击技、吸收、近身投技、姿态切换、终极技适用范围），AI 据此选择必杀和终极技的时机。
+
+## 视觉
+
+- 角色：代码绘制的骨骼身体（统一的粗描边 + 单层阴影）+ AI 生成的 Q 版头像表情（5 种表情随状态切换），状态之间做姿态混合，攻击有拖尾。
+- 界面：红黑白高对比、勒索信拼贴字、锯齿面板、放射线与网点、斜切转场；弹幕做成斜切文字框。
