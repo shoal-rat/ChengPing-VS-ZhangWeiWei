@@ -20,6 +20,7 @@ import { MovesOverlay } from "./ui/moves.js";
 import { TouchPad } from "./ui/touch.js";
 import { Classic } from "./ui/classic.js";
 import { Wipe, backdrop } from "./ui/ui.js";
+import { Trailer, recordTrailer } from "./ui/trailer.js";
 import { FONT } from "./ui/theme.js";
 
 const DEFAULTS = { danmaku: true, dmDensity: 2, voice: true, sfx: 0.8, music: 0.55, shake: 1, hitboxes: false, tapJump: false, stocks: 3, time: 0, items: true, hazards: true, seenHelp: false };
@@ -127,6 +128,7 @@ class App {
     this.acc += dt;
     const step = 1000 / 60;
     let n = 0;
+    if (this.hold) this.acc = 0;   // external driver (trailer capture) owns the clock
     while (this.acc >= step && n < 4) {
       if (this.overlay) this.overlay.update(); else if (this.scene && !this.wipe.active) this.scene.update();
       else if (this.scene && this.scene.idle) this.scene.idle();
@@ -134,7 +136,7 @@ class App {
       this.acc -= step; n++;
     }
     if (n === 4) this.acc = 0;
-    this.render();
+    if (!this.hold) this.render();
     if (this.bgLoop) setTimeout(() => this.loop(performance.now()), 16);
     else requestAnimationFrame((t) => this.loop(t));
   }
@@ -209,7 +211,10 @@ async function boot() {
   cancelAnimationFrame(raf);
   const q = new URLSearchParams(location.search);
   app.bgLoop = q.get("bg") === "1";   // dev: keep running while the tab is hidden
-  if (q.get("quick")) {
+  if (q.get("trailer")) {
+    app.setScene(new Trailer(app));
+    window.__recordTrailer = () => recordTrailer(app);
+  } else if (q.get("quick")) {
     const quick = q.get("quick").split(",");
     const lv = parseInt(q.get("lv") || "5");
     const players = quick.map((id, i) => ({

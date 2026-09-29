@@ -25,17 +25,18 @@ export class Camera {
       if (f.dead) continue;
       const cx = clamp(f.x, world.stage.blast.left + 200, world.stage.blast.right - 200);
       const cy = clamp(f.y, world.stage.blast.top + 200, world.stage.blast.bottom - 100);
-      x0 = Math.min(x0, cx - 140); x1 = Math.max(x1, cx + 140);
-      y0 = Math.min(y0, cy - 250); y1 = Math.max(y1, cy + 90);
+      const px = this.tight ? 90 : 140;
+      x0 = Math.min(x0, cx - px); x1 = Math.max(x1, cx + px);
+      y0 = Math.min(y0, cy - (this.tight ? 220 : 250)); y1 = Math.max(y1, cy + 90);
       n++;
     }
     if (!n) { x0 = -600; x1 = 600; y0 = -500; y1 = 100; }
     // always keep some of the main stage in view
-    x0 = Math.min(x0, st.focusL ?? -380); x1 = Math.max(x1, st.focusR ?? 380);
+    if (!this.tight) { x0 = Math.min(x0, st.focusL ?? -380); x1 = Math.max(x1, st.focusR ?? 380); }
     y1 = Math.max(y1, 120) + (this.hudTop ? 0 : 70);   // leave room for the HUD cards
     if (this.hudTop) y0 -= 90;
     const bw = x1 - x0, bh = y1 - y0;
-    const zx = this.vw / (bw + 160), zy = this.vh / (bh + 120);
+    const zx = this.vw / (bw + (this.tight ? 80 : 160)), zy = this.vh / (bh + (this.tight ? 60 : 120));
     this.tz = clamp(Math.min(zx, zy), st.minZoom ?? 0.36, st.maxZoom ?? 1.05);
     this.tx = (x0 + x1) / 2; this.ty = (y0 + y1) / 2 - 20;
     // clamp so the view stays inside camera bounds

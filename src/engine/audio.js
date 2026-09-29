@@ -6,12 +6,9 @@ let ctx = null, master, sfxBus, musBus, comp, noiseBuf;
 const settings = { sfx: 0.8, music: 0.55, voice: true };
 let seq = null;
 let pendingMusic = null, currentMusic = null;
+let tOff = 0;          // offline rendering: absolute schedule time added to every sound
 
-function ensure() {
-  if (ctx) return true;
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return false;
-  ctx = new AC();
+function buildGraph() {
   comp = ctx.createDynamicsCompressor();
   comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.2;
   master = ctx.createGain(); master.gain.value = 0.9;
@@ -21,6 +18,14 @@ function ensure() {
   noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 1.5, ctx.sampleRate);
   const d = noiseBuf.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+
+function ensure() {
+  if (ctx) return true;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return false;
+  ctx = new AC();
+  buildGraph();
   return true;
 }
 
@@ -30,7 +35,7 @@ function env(g, t, a, peak, dcy, sus = 0.0001) {
   g.gain.exponentialRampToValueAtTime(Math.max(0.0001, sus), t + a + dcy);
 }
 function tone(f0, dur, type = "sine", vol = 0.3, f1 = null, when = 0, bus = sfxBus) {
-  const t = ctx.currentTime + when;
+  const t = ctx.currentTime + tOff + when;
   const o = ctx.createOscillator(), g = ctx.createGain();
   o.type = type; o.frequency.setValueAtTime(f0, t);
   if (f1) o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
@@ -39,7 +44,7 @@ function tone(f0, dur, type = "sine", vol = 0.3, f1 = null, when = 0, bus = sfxB
   o.start(t); o.stop(t + dur + 0.05);
 }
 function noise(dur, freq = 1200, q = 1, vol = 0.3, type = "bandpass", when = 0, f1 = null, bus = sfxBus) {
-  const t = ctx.currentTime + when;
+  const t = ctx.currentTime + tOff + when;
   const s = ctx.createBufferSource(); s.buffer = noiseBuf;
   const f = ctx.createBiquadFilter(); f.type = type; f.frequency.setValueAtTime(freq, t); f.Q.value = q;
   if (f1) f.frequency.exponentialRampToValueAtTime(f1, t + dur);
@@ -254,4 +259,54 @@ function voice(inst, ev, t, spb, tr) {
     g.gain.value = 1;
     o.start(t); o.stop(t + L + 0.1);
   }
+}
+
+
+// ------------------------------------------------------------------ offline rendering (trailer capture)
+// events: [{t (seconds), k: "sfx"|"hit", a: args}]; music: [{t, id}] (id null = stop)
+export async function renderOffline(duration, events, music) {
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const saved = { ctx, master, sfxBus, musBus, comp, noiseBuf };
+  const rate = 44100;
+  ctx = new OAC(2, Math.ceil(duration * rate), rate);
+  buildGraph();
+  for (const e of events) {
+    tOff = e.t;
+    try { if (e.k === "sfx" && SFX[e.a[0]]) SFX[e.a[0]](); else if (e.k === "hit") hitSound(...e.a); } catch (err) {}
+  }
+  tOff = 0;
+  // music segments
+  const segs = [...music].sort((a, b) => a.t - b.t);
+  for (let i = 0; i < segs.length; i++) {
+    const m = segs[i], end = i + 1 < segs.length ? segs[i + 1].t : duration;
+    const tr = m.id && TRACKS[m.id];
+    if (!tr) continue;
+    const spb = tr.stepSec || 60 / tr.bpm / 4, S = tr.steps || 16;
+    let t = m.t + 0.05, step = 0;
+    while (t < end) {
+      const bar = Math.floor(step / S) % tr.form.length, sect = tr.sections[tr.form[bar]], st = step % S;
+      for (const [inst, pat] of Object.entries(sect)) { const ev = pat[st]; if (ev != null) voice(inst, ev, t, spb, tr); }
+      step++;
+      t += spb * (tr.swing && step % 2 ? 1 + tr.swing : tr.swing && !(step % 2) ? 1 - tr.swing : 1);
+    }
+  }
+  const buf = await ctx.startRendering();
+  ({ ctx, master, sfxBus, musBus, comp, noiseBuf } = saved);
+  return buf;
+}
+
+export function wavDataURL(buf) {
+  const ch = buf.numberOfChannels, len = buf.length, rate = buf.sampleRate;
+  const out = new DataView(new ArrayBuffer(44 + len * ch * 2));
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); out.setUint32(4, 36 + len * ch * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, ch, true); out.setUint32(24, rate, true);
+  out.setUint32(28, rate * ch * 2, true); out.setUint16(32, ch * 2, true); out.setUint16(34, 16, true); w(36, "data"); out.setUint32(40, len * ch * 2, true);
+  const data = []; for (let c = 0; c < ch; c++) data.push(buf.getChannelData(c));
+  let o = 44;
+  for (let i = 0; i < len; i++) for (let c = 0; c < ch; c++) { const v = Math.max(-1, Math.min(1, data[c][i])); out.setInt16(o, v < 0 ? v * 0x8000 : v * 0x7fff, true); o += 2; }
+  const bytes = new Uint8Array(out.buffer);
+  let bin = ""; const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return "data:audio/wav;base64," + btoa(bin);
 }

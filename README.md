@@ -6,6 +6,14 @@
 
 ▶ **在线游玩：<https://weikezhang.cn/ChengPing-VS-ZhangWeiWei/>**（电脑、手机横屏都能玩）
 
+## 🎬 胡锡退大战苹果人大战马保国大战张维维
+
+[![胡锡退大战苹果人大战马保国大战张维维](docs/media/trailer.gif)](docs/media/trailer.mp4)
+
+▶ [完整 30 秒视频（有声）](docs/media/trailer.mp4) · [在浏览器里直接播放](https://weikezhang.cn/ChengPing-VS-ZhangWeiWei/docs/media/trailer.mp4)
+
+四个 Lv8 电脑在「这就是中国」演播室混战：马保国的闪电五连鞭、老胡加仓引发的全场跌停、苹果人的“穷!愤怒!没见识!”、张维维一招“这就是中国”三杀，最后马保国大意了，没有闪。整段是游戏引擎逐帧实录，画面和声音都没有后期剪辑。
+
 ## 玩法
 
 大乱斗式规则：伤害 % 越高，被打飞得越远；飞出屏幕外就少一条命，命数用完出局。
@@ -68,6 +76,7 @@
 - `tools/build_art.py heads|stages`：抠绿幕、切图、打包到 `assets/`。
 - `tools/subset_fonts.py`：把字体裁成游戏实际用到的字（改了文案后要重新跑一次）。
 - `tools/gallery.html?c=all`：逐帧预览所有角色的所有招式和判定框。
+- 录制预告片：用 `tools/devserver.py` 打开 `/?trailer=1&fixed=1280x720`，在控制台运行 `await __recordTrailer()`，逐帧导出画面并离线渲染音轨，再用 ffmpeg 合成（编排在 `src/ui/trailer.js`）。
 
 ## 字体与致谢
 

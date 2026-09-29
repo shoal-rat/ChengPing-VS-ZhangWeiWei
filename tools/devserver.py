@@ -13,13 +13,14 @@ class H(http.server.SimpleHTTPRequestHandler):
         pass
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
-        if u.path != "/__shot":
+        if u.path not in ("/__shot", "/__save"):
             self.send_response(404); self.end_headers(); return
-        name = urllib.parse.parse_qs(u.query).get("name", ["shot"])[0]
+        name = os.path.basename(urllib.parse.parse_qs(u.query).get("name", ["shot"])[0])
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
         data = base64.b64decode(body.split(",", 1)[1])
-        os.makedirs(SHOT_DIR, exist_ok=True)
-        with open(os.path.join(SHOT_DIR, name + ".jpg"), "wb") as f:
+        out = os.path.join(SHOT_DIR, name + ".jpg") if u.path == "/__shot" else os.path.join(SHOT_DIR, name)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
             f.write(data)
         self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
 
