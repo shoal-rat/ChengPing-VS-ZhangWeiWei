@@ -5,14 +5,14 @@
 import { H } from "../common.js";
 import { Projectile } from "../../sim/projectile.js";
 
-const EXEC = 210; // knockback floor vs targets past their kill line
+const EXEC = 170; // knockback floor vs targets past their kill line
 
 export default {
   id: "laoa", name: "牢A", title: "斩杀线", en: "LAO A",
   color: "#ff2e3e", color2: "#8fd4ff",
   tagline: "一人顶一个师",
-  stats: { weight: 90, walk: 4.6, walkAccel: 1.2, run: 11.6, dash: 12.2, dashFrames: 11, runAccel: 1.1, traction: 1.0,
-    air: 6.6, airAccel: 0.44, gravity: 0.9, fall: 14, fastFall: 20.5, jumpV: 19.8, shortV: 13.2, djV: 18.6,
+  stats: { weight: 88, walk: 4.5, walkAccel: 1.2, run: 11.0, dash: 11.6, dashFrames: 11, runAccel: 1.1, traction: 1.0,
+    air: 6.4, airAccel: 0.42, gravity: 0.9, fall: 14, fastFall: 20.5, jumpV: 19.8, shortV: 13.2, djV: 18.6,
     jumps: 2, jumpsquat: 3, roll: 10, brake: 10 },
   body: { leg: [22, 22], torso: 37, torsoW: 36, arm: [20, 19], armW: [13, 12], legW: [16, 14], hand: 8, foot: [21, 10],
     neck: 4, shoulderDrop: 6, shoulderFwd: 2, shoulderBack: 4, hipW: 3, headR: 34, headH: 82, headDX: -3, headDY: 7,
@@ -50,14 +50,14 @@ export default {
       hb: [H([5, 10], "pt", 16, 10, 60, 58, 62), H([5, 10], "ctr", 22, 9, 60, 58, 60), H([11, 20], "pt", 12, 6, 65, 48, 50)], sfx: { 4: "dash" }, say: { 5: "跑路!" } },
     fsmash: { dur: 50, iasa: 48, charge: 9,
       anim: [[0, { fa: 175, fe: 20, pa: 0, lean: -16, px: -6 }], [9, { fa: 195, fe: 20, lean: -22, px: -10, ex: 1 }], [15, { fa: 50, fe: 0, pa: 0, lean: 28, px: 12, fl: 60, fk: 25, bl: -40, bk: 5, ex: 1 }, "snap"], [22, { fa: 35, fe: 0, lean: 24, px: 12 }], [50, {}]],
-      hb: [H([15, 17], "pt", 22, 16, 361, 26, 98, { eff: "slash", execute: EXEC, lag: 1.15 }), H([15, 17], "pm", 16, 14, 361, 24, 95, { eff: "slash", execute: EXEC })],
+      hb: [H([15, 17], "pt", 22, 15, 361, 26, 97, { eff: "slash", execute: EXEC, lag: 1.15 }), H([15, 17], "pm", 16, 13, 361, 24, 94, { eff: "slash", execute: EXEC })],
       sfx: { 14: "slash" }, say: { 15: "斩!" }, fx: { 15: "slashArc" } },
     usmash: { dur: 44, iasa: 42, charge: 5,
       anim: [[0, { py: 12, fk: 50, bk: 45, fa: 20, lean: 14 }], [10, { py: -6, fa: 178, fe: 0, pa: 0, lean: -8, ex: 1, sy: 1.06 }, "snap"], [18, { fa: 200, lean: -10 }], [44, {}]],
-      hb: [H([10, 15], "pt", 24, 14.5, 88, 32, 97, { eff: "slash", execute: EXEC }), H([10, 15], "pm", 18, 13, 88, 30, 95, { eff: "slash", execute: EXEC })], sfx: { 9: "slash" }, fx: { 10: "slashUp" } },
+      hb: [H([10, 15], "pt", 24, 14, 88, 32, 96, { eff: "slash" }), H([10, 15], "pm", 18, 12.5, 88, 30, 94, { eff: "slash" })], sfx: { 9: "slash" }, fx: { 10: "slashUp" } },
     dsmash: { dur: 46, iasa: 44, charge: 4,
       anim: [[0, { py: 16, fk: 70, bk: 60, lean: 24 }], [8, { py: 20, fa: 92, fe: 0, pa: 0, lean: 30, ex: 1 }, "snap"], [12, { py: 20, fa: 60, lean: 20 }], [16, { py: 20, fa: -92, fe: 0, pa: 0, lean: 10, ex: 1 }, "snap"], [24, { py: 18, fa: -80 }], [46, {}]],
-      hb: [H([8, 10], "pt", 18, 12.5, 30, 26, 96, { eff: "slash", execute: EXEC }), H([16, 18], "pt", 18, 13, 32, 28, 98, { eff: "slash", execute: EXEC, back: true })],
+      hb: [H([8, 10], "pt", 18, 12, 30, 26, 95, { eff: "slash" }), H([16, 18], "pt", 18, 12.5, 32, 28, 97, { eff: "slash", back: true })],
       sfx: { 7: "slash", 15: "slash" }, fx: { 8: "slashLow" } },
     nair: { dur: 34, iasa: 32, land: 7, ac: [[0, 3], [24, 99]],
       anim: [[0, { fl: 60, fk: 90 }], [3, { rot: 70, fa: 95, fe: 0, pa: 0, fl: 70, fk: 80, ex: 1 }], [11, { rot: 250, fa: 95 }], [18, { rot: 360 }], [34, {}]],
@@ -80,7 +80,7 @@ export default {
       anim: [[0, { lean: 20 }], [9, { fa: 90, fe: 0, ba: 92, be: 5, lean: 26, bh: "open", fl: 50, bl: -40 }, "snap"], [16, { fa: 88, ba: 88, lean: 22 }], [40, {}]] },
     fthrow: { dur: 34, throw: { f: 12, dmg: 8, ang: 45, bkb: 70, kbg: 56 },
       anim: [[0, { ba: 90 }], [8, { ba: 60, be: 70, lean: -8 }], [12, { ba: 100, be: 0, lean: 22, ex: 1 }, "snap"], [34, {}]], sfx: { 11: "throw" }, txt: { 12: "短生种!" } },
-    bthrow: { dur: 42, throw: { f: 18, dmg: 11, ang: 42, bkb: 62, kbg: 72, back: true, oy: -10, execute: EXEC },
+    bthrow: { dur: 42, throw: { f: 18, dmg: 10.5, ang: 42, bkb: 60, kbg: 70, back: true, oy: -10 },
       anim: [[0, { ba: 90 }], [10, { ba: 170, be: 10, lean: -20, ex: 1 }], [18, { ba: 250, be: 10, lean: -34, rot: -25 }, "snap"], [42, {}]], say: { 18: "润回来!" }, sfx: { 17: "throw" } },
     uthrow: { dur: 36, throw: { f: 14, dmg: 8, ang: 90, bkb: 72, kbg: 64 },
       anim: [[0, { ba: 90 }], [8, { ba: 60, be: 60, py: 10 }], [14, { ba: 180, be: 0, fa: 170, py: -4, ex: 1 }, "snap"], [36, {}]], sfx: { 13: "throw" } },
@@ -95,7 +95,7 @@ export default {
         const [x, y] = f.bone("fh");
         w.spawnProjectile(new Projectile({
           owner: f, kind: "killline", x: x + f.facing * 20, y: y - 10, vx: f.facing * 10, r: 26, life: 75, clank: 2, moveId: "nspec",
-          hb: { dmg: 6, ang: 45, bkb: 34, kbg: 50, eff: "slash", execute: EXEC + 40 },
+          hb: { dmg: 6, ang: 45, bkb: 34, kbg: 50, eff: "slash", execute: EXEC + 20 },
           onHit: (p, v, W) => { if (v.percent >= v.killLine) W.emit({ t: "say", text: "斩杀线,到了。", f }); },
           draw: drawKillLine,
         }));

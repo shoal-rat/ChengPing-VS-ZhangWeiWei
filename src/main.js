@@ -56,8 +56,10 @@ class App {
   }
   saveSettings() { try { localStorage.setItem("mks_settings", JSON.stringify(this.settings)); } catch (e) {} }
   resize() {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const w = window.innerWidth, h = window.innerHeight;
+    const fixed = new URLSearchParams(location.search).get("fixed");
+    const dpr = fixed ? 1 : Math.min(2, window.devicePixelRatio || 1);
+    let w = window.innerWidth, h = window.innerHeight;
+    if (fixed) { [w, h] = fixed.split("x").map(Number); }
     this.canvas.width = Math.round(w * dpr); this.canvas.height = Math.round(h * dpr);
     this.canvas.style.width = w + "px"; this.canvas.style.height = h + "px";
     this.dpr = dpr; this.cssW = w; this.cssH = h;
@@ -133,7 +135,8 @@ class App {
     }
     if (n === 4) this.acc = 0;
     this.render();
-    requestAnimationFrame((t) => this.loop(t));
+    if (this.bgLoop) setTimeout(() => this.loop(performance.now()), 16);
+    else requestAnimationFrame((t) => this.loop(t));
   }
 
   render() {
@@ -181,6 +184,8 @@ async function boot() {
   const canvas = document.getElementById("game");
   const app = new App(canvas);
   window.__app = app;
+  // dev helper: POST a canvas snapshot to tools/devserver.py
+  window.__shot = (name) => fetch("/__shot?name=" + encodeURIComponent(name), { method: "POST", body: canvas.toDataURL("image/jpeg", 0.85) }).then((r) => r.text());
   const loading = { p: 0 };
   let raf = 0;
   const drawLoading = () => {
@@ -203,6 +208,7 @@ async function boot() {
   try { await Promise.race([document.fonts.load(`900 40px "Smiley Sans"`), new Promise((r) => setTimeout(r, 2500))]); } catch (e) {}
   cancelAnimationFrame(raf);
   const q = new URLSearchParams(location.search);
+  app.bgLoop = q.get("bg") === "1";   // dev: keep running while the tab is hidden
   if (q.get("quick")) {
     const quick = q.get("quick").split(",");
     const lv = parseInt(q.get("lv") || "5");

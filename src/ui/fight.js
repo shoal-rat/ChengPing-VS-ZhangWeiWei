@@ -66,6 +66,7 @@ export class FightScene {
       this.updateTrails();
     }
     if (steps === 0) this.fx.step();
+    this.cam.hudTop = !!this.app.touch;
     this.cam.update(w, 1);
     this.dm.step();
     // ambient chatter: generic lines mixed with memes about whoever is on screen
@@ -83,7 +84,7 @@ export class FightScene {
     if (this.banner) { this.banner.t++; if (this.banner.t > 70) this.banner = null; }
     if (w.over) {
       this.endTimer++;
-      if (this.endTimer === 1) { this.banner = { text: "GAME!", t: 0, big: true }; Audio.sfx("game"); Audio.say("比赛结束"); Audio.music(null); }
+      if (this.endTimer === 1) { this.koText = null; this.banner = { text: "GAME!", t: 0, big: true }; Audio.sfx("game"); Audio.say("比赛结束"); Audio.music(null); }
       if (this.endTimer > 150) this.app.toResults(w, this.cfg);
     }
     // trail smoke for launched fighters
@@ -208,6 +209,10 @@ export class FightScene {
   handleEvents(evs) {
     const fx = this.fx, cam = this.cam, w = this.world;
     for (const e of evs) {
+      if (window.__autoShot && (e.t === "ko" || e.t === "fs" || (e.t === "hit" && e.kill) || e.t === "unbox" || e.t === "shieldbreak")) {
+        const n = (this.shotN = (this.shotN || 0) + 1);
+        setTimeout(() => window.__shot && window.__shot(`ev${n}_${e.t}`), e.t === "fs" ? 250 : 120);
+      }
       switch (e.t) {
         case "hit": {
           if (this.cfg.training && this.tr && e.a === w.fighters[0]) { if (w.frame - (this.tr.last || 0) > 60 && e.v.state !== "hitstun") this.tr.combo = 0; this.tr.combo = (e.combo || 1); this.tr.dmg = e.combo > 1 ? this.tr.dmg + e.dmg : e.dmg; this.tr.last = w.frame; }
@@ -247,7 +252,7 @@ export class FightScene {
           cam.addTrauma(0.9);
           Audio.sfx("ko");
           const line = e.overLine ? "斩杀!" : pick(MEME.koTags);
-          this.koText = { text: line, t: 0, col };
+          if (!(e.f.stocks <= 0 && w.fighters.filter((x) => x.stocks > 0).length <= 1)) this.koText = { text: line, t: 0, col };
           if (e.killer) this.dm.burst([...MEME.danmakuKO, ...MEME.char[e.killer.id], `${e.killer.def.name}赢麻了`, `${e.f.def.name}寄了`, `${e.f.def.name}飞了`], 10);
           else this.dm.burst(MEME.danmakuSD, 7);
           break;
@@ -347,8 +352,9 @@ export class FightScene {
     this.drawOffscreen(ctx, vw, vh);
     this.fx.drawBlasts(ctx, cam, vw, vh);
     this.drawKillFx(ctx, vw, vh);
+    this.dm.top = this.app.touch ? 150 : 64;
     this.dm.draw(ctx, vw, FONT);
-    this.hud.draw(ctx, w, vw, vh, t);
+    this.hud.draw(ctx, w, vw, vh, t, !!this.app.touch);
     if (this.cfg.training) this.drawTraining(ctx, vw);
     this.drawBanners(ctx, vw, vh);
     this.drawFsCut(ctx, vw, vh);

@@ -77,7 +77,7 @@ function island(ctx, p, P, stage, t) {
   } else if (stage.id === "sam") {
     ctx.fillStyle = "#e84a3c"; ctx.fillRect(x1, y + 26, w, 14);
     ctx.fillStyle = "#fff"; ctx.font = "900 13px sans-serif";
-    for (let x = x1 + 40; x < x2; x += 220) ctx.fillText("MEMBER'S MARK", x, y + 37);
+    for (let x = x1 + 40; x < x2; x += 220) ctx.fillText("会员价 ¥¥¥", x, y + 37);
   } else if (stage.id === "texas") {
     ctx.fillStyle = "rgba(255,255,255,0.18)"; for (let x = x1; x < x2; x += 60) ctx.fillRect(x, y + 20, 30, 6);
   }

@@ -10,13 +10,13 @@ export class HUD {
   constructor() { this.shake = new Map(); }
   onHit(f, dmg) { this.shake.set(f, Math.min(14, 4 + dmg * 0.6)); }
 
-  draw(ctx, world, vw, vh, t) {
+  draw(ctx, world, vw, vh, t, top = false) {
     const fs = world.fighters;
     const n = fs.length;
     const cw = 272, gap = 22;
     const total = n * cw + (n - 1) * gap;
     let x = (vw - total) / 2;
-    const y = vh - 122;
+    const y = top ? 4 : vh - 122;
     for (const f of fs) { this.card(ctx, f, x, y, cw, t, world); x += cw + gap; }
     if (world.rules.time) this.timer(ctx, world, vw);
   }

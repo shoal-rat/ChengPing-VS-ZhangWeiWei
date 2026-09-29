@@ -32,7 +32,8 @@ export class Camera {
     if (!n) { x0 = -600; x1 = 600; y0 = -500; y1 = 100; }
     // always keep some of the main stage in view
     x0 = Math.min(x0, st.focusL ?? -380); x1 = Math.max(x1, st.focusR ?? 380);
-    y1 = Math.max(y1, 120);
+    y1 = Math.max(y1, 120) + (this.hudTop ? 0 : 70);   // leave room for the HUD cards
+    if (this.hudTop) y0 -= 90;
     const bw = x1 - x0, bh = y1 - y0;
     const zx = this.vw / (bw + 160), zy = this.vh / (bh + 120);
     this.tz = clamp(Math.min(zx, zy), st.minZoom ?? 0.36, st.maxZoom ?? 1.05);

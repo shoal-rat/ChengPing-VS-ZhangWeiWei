@@ -22,7 +22,7 @@ export class Danmaku {
   draw(ctx, vw, font) {
     if (!this.on) return;
     for (const d of this.list) {
-      const y = 64 + d.lane * 31, x = d.x * vw / 1280;
+      const y = (this.top || 64) + d.lane * 31, x = d.x * vw / 1280;
       ctx.save();
       ctx.translate(x, y); ctx.rotate(d.rot);
       ctx.font = `900 ${d.size}px ${font}`;

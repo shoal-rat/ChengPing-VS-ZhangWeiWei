@@ -185,7 +185,7 @@ export class World {
       if (a.status.boost) dmg *= 1.3;
       if (a.status.giant) dmg *= 1.2;
       if (a.status.tiny) dmg *= 0.7;
-      if (a.status.stance === "short") dmg *= 1.15;
+      if (a.status.stance === "short") dmg *= 1.1;
       if (a.status.gloom) dmg *= 0.85;
     }
     dmg = Math.round(dmg * 10) / 10;

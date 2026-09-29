@@ -156,6 +156,12 @@ export class CpuSource {
     const dx = lx - me.x, dy = me.y - ly;           // dy > 0: below ledge
     const onStageSide = side < 0 ? me.x > main.x1 + 10 : me.x < main.x2 - 10;
     pad.mx = onStageSide ? 0 : (sign(dx) || -side);
+    if (me.state === "attack" && me.moveId === "uspec") {
+      // directional recoveries read the stick mid-move: aim up and in toward the ledge
+      const up = dy > -80;
+      pad.mx = (sign(dx) || -side) * (up ? 0.55 : 1); pad.my = up ? -1 : -0.2;
+      return;
+    }
     if (me.state === "helpless" || me.state === "airdodge" || me.state === "attack") return;
     const vy = me.vy + me.kby;
     const falling = vy > -2;

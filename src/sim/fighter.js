@@ -419,8 +419,8 @@ export class Fighter {
     if (this.status.boost) m *= 1.15;
     if (this.status.tiny) m *= 1.1;
     if (this.status.giant) m *= 0.95;
-    if (this.status.stance === "long") m *= 0.9;
-    else if (this.status.stance === "short") m *= 1.12;
+    if (this.status.stance === "long") m *= 0.92;
+    else if (this.status.stance === "short") m *= 1.08;
     return m;
   }
 
@@ -1047,8 +1047,8 @@ export class Fighter {
     this.stats.dmgTaken += h.dmg;
     let kb = h.kb;
     if (this.state === "crouch") kb *= 0.85;
-    if (this.status.stance === "long") kb *= 0.85;
-    if (this.status.stance === "short") kb *= 1.1;
+    if (this.status.stance === "long") kb *= 0.88;
+    if (this.status.stance === "short") kb *= 1.15;
     if (this.status.label && h.owner && h.owner.id === "huchenfeng") kb *= 1.2;
     if (this.status.giant) kb *= 0.72;
     if (this.status.tiny) kb *= 1.3;
